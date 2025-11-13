@@ -253,9 +253,23 @@ if uploaded:
 
     # CATE predictions
     st.subheader(" Treatment Effect (CATE) Across Time Horizons")
-    cates = predict_CATEs(df)
-    cate_df = pd.DataFrame({"Horizon (months)": list(cates.keys()),
-                            "CATE": list(cates.values())})
+    res = predict_CATEs(df)              
+    per_patient = res['per_patient']    
+    mean_cates = res['mean_cates']       
+
+# show mean CATEs
+mean_df = pd.DataFrame({
+    "Horizon (months)": list(mean_cates.keys()),
+    "Mean CATE (ChemoRT - RT)": list(mean_cates.values())
+})
+st.subheader("Treatment Effect (mean CATE) Across Time Horizons")
+st.dataframe(mean_df)
+
+# show per-patient CATEs (if more than one row)
+if not per_patient.empty:
+    st.subheader("Per-patient CATE estimates")
+    st.dataframe(per_patient)
+
     st.dataframe(cate_df)
 
     # CATE plot
