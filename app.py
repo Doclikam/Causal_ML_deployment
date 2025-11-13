@@ -10,6 +10,110 @@ st.set_page_config(
     layout="wide",
     page_icon="🩺"
 )
+import joblib
+import numpy as np
+import pandas as pd
+from functools import lru_cache
+
+# horizons used during training
+HORIZONS = [3, 6, 12, 18, 36, 60]
+
+# These must match the baseline features used at training time for causal forests.
+# Update these lists if your training used different columns.
+BASE_CAT = ['sex', 'primary_site_group', 'stage', 'hpv_clean']
+BASE_NUM = ['age', 'ecog_ps', 'BED_eff', 'EQD2', 'smoking_py_clean']
+
+FOREST_DIR = "outputs/forests"
+
+# Cache loader so Streamlit doesn't re-load forests on every rerun
+@lru_cache(maxsize=8)
+def _load_forest(h):
+    path = f"{FOREST_DIR}/forest_{h}m.joblib"
+    return joblib.load(path)
+
+def _build_X_cf(df):
+    """
+    Build the X matrix expected by the causal forests. This replicates the
+    training-time construction:
+      1) one-hot encode BASE_CAT with drop_first=True
+      2) concat numeric BASE_NUM
+      3) fill missing columns/values with zeros
+
+    Returns DataFrame X_cf (columns are feature names).
+    """
+    # Ensure expected columns exist in incoming df
+    missing_cols = [c for c in BASE_CAT + BASE_NUM if c not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Input dataframe missing required baseline columns: {missing_cols}")
+
+    # One-hot encode categorical baseline (drop_first=True to match training)
+    cat_df = pd.get_dummies(df[BASE_CAT].astype(str), drop_first=True)
+
+    # Numeric baseline (keep order)
+    num_df = df[BASE_NUM].copy().reset_index(drop=True)
+
+    # Concat
+    X_cf = pd.concat([cat_df.reset_index(drop=True), num_df.reset_index(drop=True)], axis=1)
+
+    # Ensure no NaNs
+    X_cf = X_cf.fillna(0.0)
+
+    return X_cf
+
+def predict_CATEs(df):
+    """
+    df: DataFrame of 1-or-more patients with baseline features.
+    Returns dict:
+      - 'per_patient': DataFrame with CATE per horizon for each row in df
+      - 'mean_cates': dict {horizon: mean CATE across df}
+    """
+    # build feature matrix
+    X_cf = _build_X_cf(df)
+
+    per_patient = pd.DataFrame(index=df.index)
+
+    mean_results = {}
+
+    for h in HORIZONS:
+        try:
+            forest = _load_forest(h)
+        except FileNotFoundError:
+            # forest not available for this horizon
+            per_patient[f"CATE_{h}m"] = np.nan
+            mean_results[h] = np.nan
+            continue
+        try:
+            # try .feature_importances_ shape to infer n_features or forest.feature_names_in_ (sklearn >=1.0)
+            train_cols = None
+            if hasattr(forest, "feature_names_in_"):
+                train_cols = list(forest.feature_names_in_)
+            # If no feature_names_in_, fall back to X_cf.columns (best-effort)
+            if train_cols is None:
+                X_to_use = X_cf
+            else:
+                # reindex to training columns (missing -> 0, extra -> dropped)
+                X_to_use = X_cf.reindex(columns=train_cols, fill_value=0)
+
+            # compute individual CATEs
+            te = forest.effect(X_to_use)     # <-- correct econml call
+            te = np.asarray(te).reshape(-1,)  # ensure 1d
+
+            per_patient[f"CATE_{h}m"] = te
+            mean_results[h] = float(np.nanmean(te))
+
+        except Exception as e:
+            # last-resort attempt: pass numpy array
+            try:
+                te = forest.effect(X_cf.values)
+                per_patient[f"CATE_{h}m"] = np.asarray(te).reshape(-1,)
+                mean_results[h] = float(np.nanmean(te))
+            except Exception as e2:
+                # If this still fails, return NaN and print the error for debugging
+                per_patient[f"CATE_{h}m"] = np.nan
+                mean_results[h] = np.nan
+                print(f"[predict_CATEs] Horizon {h}m: failed to compute effect: {e} || fallback error: {e2}")
+
+    return {"per_patient": per_patient, "mean_cates": mean_results}
 
 # -------------------------------------------------------
 # Load saved artifacts from the outputs/ folder
