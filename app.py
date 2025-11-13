@@ -10,7 +10,7 @@ from functools import lru_cache
 import os
 
 st.set_page_config(
-    page_title="RadCure–AI: Personalized Survival & Treatment Effect Prediction",
+    page_title="RadCure: Personalized Survival & Treatment Effect Prediction",
     page_icon="🩺",
     layout="wide",
 )
