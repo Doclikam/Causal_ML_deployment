@@ -18,7 +18,7 @@ st.set_page_config(
 def load_artifacts():
     artifacts = {}
     artifacts["logit"] = joblib.load("outputs/pooled_logit.joblib")
-    artifacts["scaler"] = joblib.load("outputs/scaler_train.joblib")
+    artifacts["scaler"] = joblib.load("outputs/scaler_pp_train.joblib")
     artifacts["collapse_maps"] = joblib.load("outputs/collapse_maps.joblib")
     artifacts["X_train_cols"] = joblib.load("outputs/X_train_columns.joblib")
     artifacts["period_mean"] = pd.read_csv("outputs/period_mean_hazards.csv")
