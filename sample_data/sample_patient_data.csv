@@ -1,0 +1,11 @@
+patient_id,age,sex,ecog_ps,ecog_ps_missing,smoking_status_clean,smoking_py_clean,smoking_py_missing,primary_site_group,subsite_clean,t,n,m,stage,t_missing,n_missing,m_missing,stage_missing,hpv_clean,hpv_missing,hpv_specific_tumors,pathology_group,is_non_tnm,tnm_structural_missing,BED_eff,EQD2,BED,treatment,time_os_days,event_os
+P001,55,M,1,0,Nonsmoker,2,0,Oropharynx,Tonsil,T2,N1,M0,III,0,0,0,0,Positive,0,0,SCC,0,0,70,68,70,1,820,1
+P002,61,F,0,0,Former,15,0,Larynx,Glottic,T3,N0,M0,III,0,0,0,0,Negative,0,0,SCC,0,0,66,64,66,0,620,0
+P003,48,M,1,0,Current,32,0,Oropharynx,BaseTongue,T2,N2,M0,IVA,0,0,0,0,Positive,0,1,SCC,0,0,74,72,74,1,900,1
+P004,70,M,2,0,Nonsmoker,0,0,OralCavity,Tongue,T4,N1,M0,IVB,0,0,0,0,Negative,0,0,SCC,1,0,60,58,60,0,400,1
+P005,58,F,1,0,Former,20,0,Hypopharynx,Pyriform,T3,N2,M0,IVA,0,0,0,0,Positive,0,0,SCC,0,1,68,66,68,1,670,0
+P006,65,M,0,0,Current,45,0,Oropharynx,SoftPalate,T1,N1,M0,II,0,0,0,0,Positive,0,0,SCC,0,0,70,68,70,0,760,0
+P007,72,F,2,0,Nonsmoker,0,0,Larynx,Supraglottic,T3,N2,M0,IVA,0,0,0,0,Negative,0,0,SCC,0,1,66,64,66,1,480,1
+P008,52,M,1,0,Former,10,0,Oropharynx,Tonsil,T1,N1,M0,II,0,0,0,0,Positive,0,0,SCC,0,0,70,68,70,0,900,0
+P009,60,M,0,0,Nonsmoker,0,0,OralCavity,FloorMouth,T2,N0,M0,III,0,0,0,0,Negative,0,0,SCC,1,0,60,58,60,1,550,1
+P010,45,F,1,0,Current,25,0,Oropharynx,BaseTongue,T2,N1,M0,III,0,0,0,0,Positive,0,0,SCC,0,0,72,70,72,1,880,0
