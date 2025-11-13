@@ -12,7 +12,7 @@ st.set_page_config(
 )
 
 # -------------------------------------------------------
-# Load saved artifacts from your outputs/ folder
+# Load saved artifacts from the outputs/ folder
 # -------------------------------------------------------
 @st.cache_resource
 def load_artifacts():
@@ -120,6 +120,13 @@ Upload patient data → Get personalized survival curves & treatment effect esti
 
 st.sidebar.header("Upload Patient Data")
 uploaded = st.sidebar.file_uploader("Upload CSV", type=["csv"])
+st.sidebar.download_button(
+    label="Download Sample CSV",
+    data=open("sample_data/sample_patient_data.csv", "rb").read(),
+    file_name="sample_patient_data.csv",
+    mime="text/csv"
+)
+
 
 # -------------------------------------------------------
 # MAIN WORKFLOW
@@ -162,3 +169,4 @@ else:
 st.markdown("---")
 st.markdown("Built with  using Streamlit • Causal ML • RADCURE Dataset")
 
+M
