@@ -6,6 +6,12 @@ from scipy.special import expit
 from functools import lru_cache
 import os
 
+st.set_page_config(
+    page_title="RadCure–AI: Personalized Survival & Treatment Effect Prediction",
+    page_icon="🩺",
+    layout="wide",
+)
+
 # -----------------------------
 # GLOBAL CONSTANTS
 # -----------------------------
@@ -174,7 +180,13 @@ def predict_CATEs(df, artifacts):
 # ============================================================
 def main():
     st.title("Causal ML – RadCure Survival & Treatment Effect Explorer")
-
+    st.markdown("""
+<div style='text-align:center;'>
+    <h1 style='color:#0058A3;'>RadCure–AI</h1>
+    <h3>Personalized Survival & Treatment Effect Prediction for Head & Neck Cancer</h3>
+    <p>Powered by Causal Machine Learning and Real-World Radiotherapy Data</p>
+</div>
+""", unsafe_allow_html=True)
     artifacts = load_artifacts()
 
     st.sidebar.header("Upload Data")
@@ -184,6 +196,17 @@ def main():
         st.info("Please upload a CSV to begin.")
         return
 
+    st.sidebar.header("Upload Patient Data")
+    uploaded = st.sidebar.file_uploader("Upload CSV", type=["csv"])
+    st.sidebar.title("🧭 Clinical Workflow")
+    st.sidebar.markdown("""
+    1. **Upload patient CSV**  
+    2. **Select analysis outputs**  
+    3. **View predicted survival curves**  
+    4. **Review personalized treatment benefit (CATE)**  
+    5. **Download report for patient file**  
+    """)
+    
     df = pd.read_csv(file)
     st.success("Uploaded successfully.")
 
