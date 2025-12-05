@@ -9,6 +9,53 @@ import scipy.signal as signal
 from statsmodels.nonparametric.smoothers_lowess import lowess
 from sklearn.metrics import pairwise_distances_argmin_min
 
+
+
+# ===== bootstrap: define 'loaded' and safe artifact defaults =====
+import os, joblib, pandas as pd
+from io import BytesIO
+
+# ensure loaded exists and is a dict
+if 'loaded' not in globals() or not isinstance(globals().get('loaded'), dict):
+    loaded = {}
+
+# OUTDIR and FILES defaults (adjust names to match your outputs/)
+OUTDIR = globals().get('OUTDIR', os.path.join(os.getcwd(), "outputs"))
+FILES = globals().get('FILES', {
+    'pooled_cols': "pooled_logit_model_columns.csv",
+    'pooled_logit': "pooled_logit_logreg_saga.joblib",
+    'cf_model': "cf_rmst_36m_patient_level.joblib",
+    'shap_summary_img': "shap_summary.png"
+})
+
+# try to pre-load a couple common artifacts into loaded (non-fatal if missing)
+def _try_load(key, path):
+    p = os.path.join(OUTDIR, path)
+    if os.path.exists(p):
+        try:
+            loaded[key] = joblib.load(p)
+        except Exception:
+            try:
+                loaded[key] = pd.read_csv(p).squeeze().tolist()
+            except Exception:
+                # silent: leave unloaded but avoid crash later
+                pass
+
+_try_load('pooled_logit', FILES.get('pooled_logit'))
+# attempt to load pooled cols list
+pc = os.path.join(OUTDIR, FILES.get('pooled_cols'))
+if os.path.exists(pc):
+    try:
+        loaded['pooled_cols'] = pd.read_csv(pc).squeeze().tolist()
+    except Exception:
+        pass
+
+# make these available globally (so other cells see them)
+globals()['loaded'] = loaded
+globals()['OUTDIR'] = OUTDIR
+globals()['FILES'] = FILES
+
+
 # ------------------ In "Time-varying & period-level panel" section update ------------------
 st.header('Time-varying effects: hazards, HR, cumulative ΔRMST (interactive)')
 
