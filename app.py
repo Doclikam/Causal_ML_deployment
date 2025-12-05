@@ -19,12 +19,15 @@ import numpy as np
 import joblib, os
 import matplotlib.pyplot as plt
 from math import ceil
+import os
 
 st.set_page_config(page_title="H&N Causal Survival Explorer", layout="wide")
 
 # ----------------- CONFIG: edit these paths to your artifact folder -----------------
 # Auto-detect helper: put this in app.py before the safe_load calls
 import os
+BASE = "/content/drive/MyDrive/outputs_hncc_project"
+
 candidates = [
     "/content/drive/MyDrive/outputs_hncc_project",
     "/content/drive/MyDrive/outputs",
