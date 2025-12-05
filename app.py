@@ -5,8 +5,6 @@ import joblib
 from scipy.special import expit
 from functools import lru_cache
 import os
-
-# ------------------ Insert near top after artifact loading ------------------
 import scipy.signal as signal
 from statsmodels.nonparametric.smoothers_lowess import lowess
 from sklearn.metrics import pairwise_distances_argmin_min
