@@ -23,7 +23,42 @@ from math import ceil
 st.set_page_config(page_title="H&N Causal Survival Explorer", layout="wide")
 
 # ----------------- CONFIG: edit these paths to your artifact folder -----------------
-BASE = "/content/Causal_ML_deployment/outputs"
+# Auto-detect helper: put this in app.py before the safe_load calls
+import os
+candidates = [
+    "/content/drive/MyDrive/outputs_hncc_project",
+    "/content/drive/MyDrive/outputs",
+    "/content/Causal_ML_deployment/outputs",
+    "/content/drive/MyDrive/outputs"
+]
+
+found = None
+for cand in candidates:
+    if not os.path.isdir(cand):
+        continue
+    # check for at least one canonical file
+    has_model = os.path.exists(os.path.join(cand, "pooled_logit_logreg_saga.joblib")) \
+                or os.path.exists(os.path.join(cand, "pooled_logit.joblib")) \
+                or os.path.exists(os.path.join(cand, "pooled_logit_logreg_saga.pkl"))
+    has_cols = os.path.exists(os.path.join(cand, "pooled_logit_model_columns.csv")) \
+               or os.path.exists(os.path.join(cand, "X_train_columns.joblib")) \
+               or os.path.exists(os.path.join(cand, "train_dummy_columns.joblib"))
+    if has_model and has_cols:
+        found = cand
+        break
+# fallback: pick first candidate that has the model
+if found is None:
+    for cand in candidates:
+        if os.path.exists(os.path.join(cand, "pooled_logit_logreg_saga.joblib")):
+            found = cand
+            break
+
+if found is not None:
+    st.sidebar.success(f"Auto-detected BASE = {found}")
+    BASE = found
+else:
+    st.sidebar.warning("Could not auto-detect BASE. Please set BASE manually to folder containing pooled_logit and model columns.")
+
 POOLED_LOGIT = os.path.join(BASE, "pooled_logit_logreg_saga.joblib")
 POOLED_COLS  = os.path.join(BASE, "pooled_logit_model_columns.csv")
 PP_SCALER    = os.path.join(BASE, "pp_scaler.joblib")
