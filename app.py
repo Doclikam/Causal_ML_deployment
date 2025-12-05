@@ -13,12 +13,10 @@ from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
 from math import ceil
 import plotly.graph_objects as go
-from utils.infer import infer_new_patient_fixed as infer_new_patient
+from utils.infer import infer_new_patient_fixed 
 
 base_url = "https://raw.githubusercontent.com/Doclikam/Causal_ML_deployment/main/outputs"
-import streamlit as st
-from utils.infer import infer_new_patient_fixed  # adjust if you used a different path/name
-import pandas as pd
+
 
 st.set_page_config(page_title="Causal Inference — Quick infer", layout="wide")
 
