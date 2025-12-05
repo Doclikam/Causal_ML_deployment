@@ -270,33 +270,3 @@ for h in FOREST_HORIZONS:
 
 st.table(pd.DataFrame.from_dict(cate_results, orient='index', columns=['CATE (prob points)']))
 
-# ----- Explanations & decision support
-st.header("4) How to interpret & recommended next steps (user-friendly)")
-st.markdown("""
-**Interpretation**
-- `S_control` and `S_treat` are *adjusted* survival probabilities (model-based). The difference `S_treat - S_control` is the modelled absolute benefit (probability points) in that interval.
-- `ΔRMST` (shown above) summarizes benefit in days up to the selected horizon. Example: ΔRMST = +60 days means the treated counterfactual keeps the patient alive 60 more days on average up to the horizon.
-- `CATE_h` (if available) is the model's estimate of the individual treatment effect for that horizon (probability points). Positive = higher survival with Chemo+RT.
-
-**If CATEs are NaN**
-- Typical cause: the causal forest expects exact dummy columns + numeric ordering used during training. Make sure you saved and load `train_dummy_columns.joblib` and `causal_patient_scaler.joblib` when serving.
-- Another cause: forest trained on different patient set (different categorical collapse). Recreate collapse maps or rebuild forests on patient-level X and save the dummy template.
-
-**Decision support (example)**
-- If ΔRMST > 90 days (3 months) and the patient is fit (low ECOG), consider recommending Chemo+RT; weigh against toxicity/contraindications.
-- If CATE_h > 0.02 (2 percentage points) consistently across important horizons and uncertainty is low, that supports benefit.
-- Always combine model output with clinical judgement and multidisciplinary discussion.
-
-**Data format for batch upload**
-- CSV with one row per patient and columns: `patient_id`, `age`, `sex`, `ecog_ps`, `smoking_status_clean`, `smoking_py_clean`, `primary_site_group`, `pathology_group`, `hpv_clean`, `treatment` (0/1 if available). For pooled-logit prediction we will create person-period rows internally.
-""")
-
-st.markdown("### Troubleshooting checklist")
-st.write("""
-- ✅ Ensure `pooled_logit_logreg_saga.joblib` and `pooled_logit_model_columns.csv` are present in BASE.
-- ✅ Ensure `pp_scaler.joblib`, `pp_train_medians.joblib`, `pp_collapse_maps.joblib` are present when using pooled-logit.
-- ✅ For forest CATEs: ensure `train_dummy_columns.joblib` and `causal_patient_scaler.joblib` are present and were created from the same pipeline used to train forests.
-- If you need, use the training notebook to re-run the patient-level forest pipeline and save `train_dummy_columns.joblib` and `causal_patient_scaler.joblib`.
-""")
-
-st.caption("Created for a user-friendly clinical-facing demo. Always show results alongside clinical review.")
