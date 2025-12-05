@@ -1,6 +1,6 @@
 # Causal_ML_deployment
 Deployment of The causal ML model on chemotherapy/radiotherapy response for HNCC.
-# Causal_ML_deployment outputs
+
 This repo stores model artifacts, person-period tables, bootstrap results, and plots
 from the radiotherapy causal analysis pipeline.
 
