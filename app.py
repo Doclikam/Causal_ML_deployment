@@ -23,7 +23,7 @@ from math import ceil
 st.set_page_config(page_title="H&N Causal Survival Explorer", layout="wide")
 
 # ----------------- CONFIG: edit these paths to your artifact folder -----------------
-BASE = "/content/drive/MyDrive/outputs_hncc_project"   # <<-- change if needed
+BASE = "/content/Causal_ML_deployment/outputs"
 POOLED_LOGIT = os.path.join(BASE, "pooled_logit_logreg_saga.joblib")
 POOLED_COLS  = os.path.join(BASE, "pooled_logit_model_columns.csv")
 PP_SCALER    = os.path.join(BASE, "pp_scaler.joblib")
