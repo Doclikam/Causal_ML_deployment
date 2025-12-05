@@ -13,74 +13,6 @@ from io import BytesIO
 
 
 
-
-
-
-
-
-# ---------- Bootstrap: ensure 'loaded' and defaults exist (paste right after imports) ----------
-import os, joblib, pandas as pd
-
-# safe 'loaded' dict (prevents NameError everywhere)
-if not isinstance(globals().get('loaded'), dict):
-    loaded = {}
-    globals()['loaded'] = loaded
-
-# OUTDIR and FILES defaults (adjust filenames to match your project)
-OUTDIR = globals().get('OUTDIR', os.path.join(os.getcwd(), "outputs"))
-FILES = globals().get('FILES', {
-    'pooled_cols': "pooled_logit_model_columns.csv",
-    'pooled_logit': "pooled_logit_logreg_saga.joblib",
-    'cf_model': "cf_rmst_36m_patient_level.joblib",
-    'pooled_pp': "pp_test.csv",
-    'shap_summary_img': "shap_summary.png"
-})
-globals()['OUTDIR'] = OUTDIR
-globals()['FILES'] = FILES
-
-# helper: safe joblib loader that won't crash app
-def safe_load_joblib(path):
-    try:
-        if path is None:
-            return None
-        if os.path.exists(path):
-            return joblib.load(path)
-    except Exception as e:
-        # don't raise — just return None and let later code handle missing artifact
-        print(f"[bootstrap] safe_load_joblib failed for {path}: {e}")
-    return None
-
-# try to preload a few common artifacts into loaded (non-fatal)
-_try_paths = {
-    'pooled_logit': os.path.join(OUTDIR, FILES.get('pooled_logit')),
-    'pooled_cols': os.path.join(OUTDIR, FILES.get('pooled_cols')),
-    'cf_model': os.path.join(OUTDIR, FILES.get('cf_model')),
-    'pooled_pp': os.path.join(OUTDIR, FILES.get('pooled_pp'))
-}
-for k, p in _try_paths.items():
-    if k in loaded:  # don't overwrite if already set upstream
-        continue
-    try:
-        if p.endswith('.csv') or p.endswith('.txt'):
-            if os.path.exists(p):
-                if k == 'pooled_cols':
-                    loaded[k] = pd.read_csv(p).squeeze().tolist()
-                else:
-                    loaded[k] = pd.read_csv(p)
-        else:
-            v = safe_load_joblib(p)
-            if v is not None:
-                loaded[k] = v
-    except Exception as e:
-        print(f"[bootstrap] preload failed for {p}: {e}")
-
-# ensure loaded is available globally (helpful when streamlit re-runs)
-globals()['loaded'] = loaded
-print("[bootstrap] loaded dict initialized; OUTDIR:", OUTDIR)
-# ---------- end bootstrap ----------
-
-
-
 # ------------------ In "Time-varying & period-level panel" section update ------------------
 st.header('Time-varying effects: hazards, HR, cumulative ΔRMST (interactive)')
 
@@ -173,5 +105,3 @@ else:
         peak_period, peak_val = detect_peak(pp_summary['delta_rmst_period_days'].fillna(0).values, pp_summary['period'].values, frac=0.25)
         st.success(f"Peak marginal ΔRMST period: **{peak_period}** (approx. ΔRMST contribution {peak_val/30.0:.2f} months at that period).")
         st.caption("Interpretation: the period shown is where the marginal, population-level, per-period contribution to ΔRMST is largest.")
-
-# ----------------------------------------------------------------
