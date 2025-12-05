@@ -11,66 +11,86 @@ from sklearn.metrics import pairwise_distances_argmin_min
 from io import BytesIO
 from scipy.special import expit
 from sklearn.preprocessing import StandardScaler
-
-# app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib, os
 import matplotlib.pyplot as plt
 from math import ceil
-import os
+
 
 st.set_page_config(page_title="H&N Causal Survival Explorer", layout="wide")
 
 # ----------------- CONFIG: edit these paths to your artifact folder -----------------
 # Auto-detect helper: put this in app.py before the safe_load calls
-import os
+
+
+# set this to the folder that contains your saved artifacts (you already confirmed this)
 BASE = "/content/drive/MyDrive/outputs_hncc_project"
 
-candidates = [
-    "/content/drive/MyDrive/outputs_hncc_project",
-    "/content/drive/MyDrive/outputs",
-    "/content/Causal_ML_deployment/outputs",
-    "/content/drive/MyDrive/outputs"
-]
+# candidate artifact names (common)
+FILES = {
+    "pooled_logit": ["pooled_logit_logreg_saga.joblib", "pooled_logit.joblib", "pooled_logit.joblib"],
+    "pooled_cols_csv": "pooled_logit_model_columns.csv",
+    "pp_scaler": "pp_scaler.joblib",
+    "pp_train_medians": "pp_train_medians.joblib",
+    "pp_collapse_maps": "pp_collapse_maps.joblib",
+    "causal_patient_scaler": "causal_patient_scaler.joblib",
+    "causal_forests_all": "causal_forests_period_horizons_patient_level.joblib",
+    "forests_dir": os.path.join(BASE, "forests"),
+    "train_dummy_columns": "train_dummy_columns.joblib",
+    "X_train_columns": "X_train_columns.joblib"
+}
 
-found = None
-for cand in candidates:
-    if not os.path.isdir(cand):
-        continue
-    # check for at least one canonical file
-    has_model = os.path.exists(os.path.join(cand, "pooled_logit_logreg_saga.joblib")) \
-                or os.path.exists(os.path.join(cand, "pooled_logit.joblib")) \
-                or os.path.exists(os.path.join(cand, "pooled_logit_logreg_saga.pkl"))
-    has_cols = os.path.exists(os.path.join(cand, "pooled_logit_model_columns.csv")) \
-               or os.path.exists(os.path.join(cand, "X_train_columns.joblib")) \
-               or os.path.exists(os.path.join(cand, "train_dummy_columns.joblib"))
-    if has_model and has_cols:
-        found = cand
+def load_if_exists(path):
+    if os.path.exists(path):
+        return joblib.load(path)
+    return None
+
+# load pooled-logit artifacts (for survival predictions)
+pooled_path = None
+for p in FILES["pooled_logit"]:
+    cand = os.path.join(BASE, p)
+    if os.path.exists(cand):
+        pooled_path = cand
         break
-# fallback: pick first candidate that has the model
-if found is None:
-    for cand in candidates:
-        if os.path.exists(os.path.join(cand, "pooled_logit_logreg_saga.joblib")):
-            found = cand
-            break
 
-if found is not None:
-    st.sidebar.success(f"Auto-detected BASE = {found}")
-    BASE = found
+pooled_logit = joblib.load(pooled_path) if pooled_path else None
+print("Loaded pooled_logit:", pooled_path)
+
+model_columns = None
+cols_csv = os.path.join(BASE, FILES["pooled_cols_csv"])
+if os.path.exists(cols_csv):
+    model_columns = pd.read_csv(cols_csv).squeeze().tolist()
+    print("Loaded pooled-logit model_columns from CSV, n_cols:", len(model_columns))
 else:
-    st.sidebar.warning("Could not auto-detect BASE. Please set BASE manually to folder containing pooled_logit and model columns.")
+    xcols_path = os.path.join(BASE, FILES["X_train_columns"])
+    if os.path.exists(xcols_path):
+        model_columns = joblib.load(xcols_path)
+        print("Loaded X_train_columns joblib, n_cols:", len(model_columns))
+    else:
+        # last fallback
+        print("Warning: pooled-logit model_columns file not found in BASE. Some predictions may fail.")
 
-POOLED_LOGIT = os.path.join(BASE, "pooled_logit_logreg_saga.joblib")
-POOLED_COLS  = os.path.join(BASE, "pooled_logit_model_columns.csv")
-PP_SCALER    = os.path.join(BASE, "pp_scaler.joblib")
-PP_MEDIANS   = os.path.join(BASE, "pp_train_medians.joblib")
-PP_COLLAPSE  = os.path.join(BASE, "pp_collapse_maps.joblib")
-KM_CENSOR    = os.path.join(BASE, "km_censor_train.joblib")
-FOREST_DIR   = os.path.join(BASE, "forests")   # expects forest_3m.joblib etc.
-FOREST_HORIZONS = [3,6,12,18,36,60]
-INTERVAL_DAYS = 30
+pp_scaler = load_if_exists(os.path.join(BASE, FILES["pp_scaler"]))
+pp_train_medians = load_if_exists(os.path.join(BASE, FILES["pp_train_medians"]))
+pp_collapse_maps = load_if_exists(os.path.join(BASE, FILES["pp_collapse_maps"]))
+
+# causal forests: try both a single joblib bundle or individual forest files in forests/
+forests_bundle = load_if_exists(os.path.join(BASE, FILES["causal_forests_all"]))
+forests = {}
+if forests_bundle:
+    forests = forests_bundle
+    print("Loaded causal forests bundle.")
+else:
+    # try to load by horizon files inside BASE/forests
+    for h in [3,6,12,18,36,60]:
+        p = os.path.join(BASE, "forests", f"forest_{h}m.joblib")
+        if os.path.exists(p):
+            forests[h] = joblib.load(p)
+            print("Loaded forest for horizon", h)
+print("Forests available for horizons:", sorted(list(forests.keys())))
+
 # -------------------------------------------------------------------------------
 
 st.title("📈 HNCC — Survival & Individual Treatment Effects Explorer")
