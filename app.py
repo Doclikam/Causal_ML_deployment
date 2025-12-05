@@ -13,224 +13,227 @@ from io import BytesIO
 
 
 
-# app_shap_lightgbm.py
-import os
-import joblib
-import numpy as np
-import pandas as pd
-import lightgbm as lgb
-from sklearn.model_selection import train_test_split
+import joblib, os, numpy as np, pandas as pd
+from scipy.special import expit
 from sklearn.preprocessing import StandardScaler
-import shap
-import plotly.express as px
-import plotly.graph_objects as go
-import streamlit as st
 
-# ---------- Config ----------
-OUTDIR = "outputs"
-RNG = 42
-TARGET_COL = "delta_rmst_days"      # computed earlier (we will convert to months)
-USE_MONTHS = True                   # True -> model months (easier to read)
-MODEL_PATH = os.path.join(OUTDIR, "lgbm_delta_rmst_36m.joblib")
-SHAP_OBJ_PATH = os.path.join(OUTDIR, "shap_lgbm_delta_rmst_36m.joblib")
-MAX_SHAP_EXPLAIN = 3000             # max rows to compute SHAP on (sample if bigger)
+# === CONFIG: point these to your saved files ===
+BASE = "/content/drive/MyDrive/outputs_hncc_project"   # adjust to folder you want
+POOLED_LOGIT_PATH = os.path.join(BASE, "pooled_logit_logreg_saga.joblib")
+POOLED_COLS_PATH  = os.path.join(BASE, "pooled_logit_model_columns.csv")   # or X_train_columns.joblib
+PP_SCALER_PATH    = os.path.join(BASE, "pp_scaler.joblib")
+PP_MEDIANS_PATH   = os.path.join(BASE, "pp_train_medians.joblib")
+PP_COLLAPSE_PATH  = os.path.join(BASE, "pp_collapse_maps.joblib")
+KM_CENSOR_PATH    = os.path.join(BASE, "km_censor_train.joblib")
+FOREST_FOLDER     = os.path.join(BASE, "forests")   # folder with forest_3m.joblib etc.
+PATIENT_SCALER    = os.path.join(BASE, "causal_patient_scaler.joblib")  # optional
+FOREST_LIST       = [3,6,12,18,36,60]
 
-# ---------- 1) Load data ----------
-rmst_path = os.path.join(OUTDIR, "cf_vs_logit_rmst_36m_per_patient_fixed.csv")
-tp_path = os.path.join(OUTDIR, "test_patients_with_period_cates.csv")
+interval_days = 30
+period_labels = ['0-3','4-6','7-12','13-24','25-60','60+']
 
-if not os.path.exists(rmst_path):
-    raise FileNotFoundError(f"{rmst_path} not found. Run RMST computation first.")
-if not os.path.exists(tp_path):
-    raise FileNotFoundError(f"{tp_path} not found. Ensure test_patients saved in outputs/")
+# === Load artifacts safely ===
+def safe_load(path):
+    if os.path.exists(path):
+        return joblib.load(path)
+    return None
 
-df_rmst = pd.read_csv(rmst_path)
-test_patients = pd.read_csv(tp_path)
-
-df = test_patients.merge(df_rmst, on="patient_id", how="left")
-df = df.dropna(subset=[TARGET_COL]).reset_index(drop=True)
-st.write if "st" in globals() else print  # avoid linter noise
-
-# ---------- 2) Features (adjust as needed) ----------
-baseline_cat = [c for c in ['sex','smoking_status_clean','primary_site_group','pathology_group','hpv_clean'] if c in df.columns]
-baseline_num = [c for c in ['age','ecog_ps','BED_eff','EQD2','smoking_py_clean'] if c in df.columns]
-
-# create X
-X_cat = pd.get_dummies(df[baseline_cat].fillna("Missing").astype(str), drop_first=True)
-X_num = df[baseline_num].copy()
-for c in X_num.columns:
-    X_num[c] = pd.to_numeric(X_num[c], errors='coerce')
-X_num = X_num.fillna(X_num.median())
-
-# optional: quadratic terms (uncomment if desired)
-for c in ['age','ecog_ps','smoking_py_clean']:
-    if c in X_num.columns:
-        X_num[f"{c}_sq"] = X_num[c]**2
-
-# combine, scale numeric
-X = pd.concat([X_cat.reset_index(drop=True), X_num.reset_index(drop=True)], axis=1).fillna(0)
-scaler_path = os.path.join(OUTDIR, "rf_delta_model_columns.csv")  # not used here but we save scaler later if needed
-
-# Target y in months
-y_days = df[TARGET_COL].astype(float).values
-if USE_MONTHS:
-    y = y_days / 30.0
-    target_unit = "months"
-else:
-    y = y_days
-    target_unit = "days"
-
-# sample weights (if present)
-if 'sample_w_36m' in df.columns:
-    sample_w = df['sample_w_36m'].fillna(1.0).astype(float).values
-elif 'sw_trunc' in df.columns:
-    sample_w = df['sw_trunc'].fillna(1.0).astype(float).values
-elif 'sw' in df.columns:
-    sample_w = df['sw'].fillna(1.0).astype(float).values
-else:
-    sample_w = np.ones(len(df))
-
-# train/hold split
-X_train, X_hold, y_train, y_hold, w_train, w_hold = train_test_split(
-    X, y, sample_w, test_size=0.2, random_state=RNG
-)
-
-# ---------- 3) LightGBM training ----------
-# convert to LGBM dataset (sklearn API is fine for early stopping)
-lgbm = lgb.LGBMRegressor(
-    objective="regression",
-    n_estimators=2000,
-    learning_rate=0.03,
-    num_leaves=31,
-    max_depth=7,
-    min_child_samples=20,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    random_state=RNG,
-    n_jobs=-1
-)
-
-# fit with early stopping using holdout
-lgbm.fit(
-    X_train, y_train,
-    sample_weight=w_train,
-    eval_set=[(X_hold, y_hold)],
-    eval_sample_weight=[w_hold],
-    eval_metric="rmse",
-    early_stopping_rounds=50,
-    verbose=50
-)
-
-# save model and column names
-joblib.dump(lgbm, MODEL_PATH)
-pd.Series(X.columns).to_csv(os.path.join(OUTDIR, "lgbm_delta_model_columns.csv"), index=False)
-print("Saved LightGBM model to", MODEL_PATH)
-
-# ---------- 4) SHAP explanation ----------
-# Use TreeExplainer (fast for tree models)
-explainer = shap.TreeExplainer(lgbm, feature_perturbation="tree_path_dependent")
-
-# choose rows for SHAP (holdout or sample if large)
-if X_hold.shape[0] <= MAX_SHAP_EXPLAIN:
-    X_shap = X_hold.copy()
-else:
-    X_shap = X_hold.sample(MAX_SHAP_EXPLAIN, random_state=RNG)
-
-shap_values = explainer.shap_values(X_shap)  # returns array (n_rows, n_features) for single-output
-# store for reuse
-joblib.dump({"explainer": explainer, "shap_values": shap_values, "X_shap": X_shap}, SHAP_OBJ_PATH)
-print("Saved SHAP objects to", SHAP_OBJ_PATH)
-
-# ---------- 5) Helper to show SHAP in Streamlit ----------
-def st_shap_force_plot(explainer, shap_vals, X_row):
-    """
-    Render a shap.force_plot for a single row in Streamlit via HTML component.
-    """
-    import streamlit.components.v1 as components
-    # shap.force_plot produces an HTML object; convert to html and render
-    fp = shap.force_plot(explainer.expected_value, shap_vals, X_row, matplotlib=False)
-    html = f"<head>{shap.getjs()}</head><body>{fp.html()}</body>"
-    components.html(html, height=350)
-
-# Interactive Plotly global plots (mean |SHAP| bar) and dependence
-def plotly_shap_summary(shap_values, X_df, top_n=25):
-    mean_abs = np.mean(np.abs(shap_values), axis=0)
-    feat_imp = pd.DataFrame({"feature": X_df.columns, "mean_abs_shap": mean_abs})
-    feat_imp = feat_imp.sort_values("mean_abs_shap", ascending=False).reset_index(drop=True)
-    fig = px.bar(feat_imp.head(top_n), x="mean_abs_shap", y="feature", orientation="h", title=f"Top {top_n} feature importance (mean |SHAP|)")
-    fig.update_layout(yaxis={"categoryorder":"total ascending"})
-    return fig, feat_imp
-
-def plotly_shap_dependence(shap_values, X_df, feature):
-    idx = list(X_df.columns).index(feature)
-    sv = shap_values[:, idx]
-    fig = px.scatter(x=X_df[feature], y=sv, labels={"x": feature, "y": "SHAP"}, title=f"SHAP dependence: {feature}")
-    # add smoothed trend
+logit = safe_load(POOLED_LOGIT_PATH)
+model_columns = None
+if os.path.exists(POOLED_COLS_PATH):
     try:
-        import numpy as np
-        order = np.argsort(X_df[feature].values)
-        fig.add_traces(go.Scatter(x=X_df[feature].values[order], y=pd.Series(sv).values[order].cumsum()*0+np.nan, mode="lines"))  # dummy if you want to add fit
+        model_columns = pd.read_csv(POOLED_COLS_PATH).squeeze().tolist()
     except Exception:
-        pass
-    return fig
+        # maybe joblib
+        model_columns = safe_load(POOLED_COLS_PATH)
+pp_scaler = safe_load(PP_SCALER_PATH)
+pp_medians = safe_load(PP_MEDIANS_PATH)  # pandas Series or dict
+collapse_maps = safe_load(PP_COLLAPSE_PATH) or {}
+km_censor = safe_load(KM_CENSOR_PATH)
 
-# ---------- 6) Streamlit app UI ----------
-def run_streamlit():
-    st.title("ΔRMST explainability — LightGBM + SHAP (interactive)")
+# patient-level design templates (from training objects)
+# dummy_cols come from how you built Xtr_patient: saved earlier as 'dummy_cols' or 'train_dummy_columns'
+DUMMY_COLS_PATH = os.path.join(BASE, "train_dummy_columns.joblib")
+dummy_cols = safe_load(DUMMY_COLS_PATH) or []     # used for causal forest patient-level dummies
 
-    st.sidebar.header("Model info")
-    st.sidebar.write(f"Rows: {X.shape[0]}  Features: {X.shape[1]}")
-    st.sidebar.write(f"Target unit: {target_unit}")
+# baseline lists used when training forests (should match what you trained with)
+baseline_cat = ['sex','smoking_status_clean','primary_site_group','pathology_group','hpv_clean']
+baseline_num = ['age','ecog_ps','BED_eff','EQD2','smoking_py_clean']
+# if your training used scaler for patient-level features:
+patient_scaler = safe_load(PATIENT_SCALER)
 
-    # Global importance
-    fig_imp, feat_imp_df = plotly_shap_summary(shap_values, X_shap, top_n=30)
-    st.plotly_chart(fig_imp, use_container_width=True)
+# helper: build pooled-logit X for person-period rows
+def build_X_for_pp(df_pp):
+    df = df_pp.copy()
+    # apply collapse maps
+    for c, keep in (collapse_maps.items() if collapse_maps else []):
+        if c in df.columns:
+            df[c] = df[c].astype(str).where(df[c].astype(str).isin(keep), 'Other')
+    # ensure period_bin exists
+    if 'period_month' not in df.columns:
+        df['period_month'] = df['period'].astype(int) if 'period' in df.columns else 1
+    if 'period_bin' not in df.columns:
+        bins = [0,3,6,12,24,60, np.inf]
+        labels = ['0-3','4-6','7-12','13-24','25-60','60+']
+        df['period_bin'] = pd.cut(df['period_month'], bins=bins, labels=labels, right=True)
 
-    # choose a feature to show dependence
-    feat = st.selectbox("Choose feature for SHAP dependence", X.columns.tolist(), index=0)
-    fig_dep = plotly_shap_dependence(shap_values, X_shap, feat)
-    st.plotly_chart(fig_dep, use_container_width=True)
+    # categorical dummies (use the exact categorical columns used in training)
+    cat_cols = [c for c in ['period_bin','sex','smoking_status_clean','primary_site_group','subsite_clean','stage','hpv_clean'] if c in df.columns]
+    Xc = pd.get_dummies(df[cat_cols].astype(str), drop_first=True) if len(cat_cols)>0 else pd.DataFrame(index=df.index)
 
-    # show scatter of predicted vs actual on holdout
-    y_hold_pred = lgbm.predict(X_hold)
-    scatter_fig = px.scatter(x=y_hold, y=y_hold_pred, labels={"x":"actual ΔRMST ("+target_unit+")", "y":"predicted ΔRMST ("+target_unit+")"}, title="Holdout: actual vs predicted")
-    st.plotly_chart(scatter_fig, use_container_width=True)
+    # numeric
+    num_cols = [c for c in ['age','ecog_ps','smoking_py_clean','time_since_rt_days'] if c in df.columns]
+    Xn = df[num_cols].copy() if len(num_cols)>0 else pd.DataFrame(index=df.index)
+    if not Xn.empty:
+        for c in Xn.columns:
+            Xn[c] = pd.to_numeric(Xn[c], errors='coerce')
+        if pp_medians is not None:
+            Xn = Xn.fillna(pd.Series(pp_medians))
+        else:
+            Xn = Xn.fillna(Xn.median())
 
-    # Per-patient explain: choose patient id
-    pid = st.selectbox("Choose patient_id to explain", df["patient_id"].unique().tolist())
-    row = df[df["patient_id"]==pid].iloc[0]
-    st.write("Patient baseline (selected):")
-    st.json(row[baseline_cat + baseline_num].to_dict())
+        # scale
+        if pp_scaler is not None:
+            try:
+                Xn_scaled = pd.DataFrame(pp_scaler.transform(Xn), columns=Xn.columns, index=Xn.index)
+            except Exception as e:
+                # feature name mismatch -> fall back to numeric-only transform without names
+                Xn_scaled = pd.DataFrame(StandardScaler().fit_transform(Xn), columns=Xn.columns, index=Xn.index)
+        else:
+            Xn_scaled = Xn
+    else:
+        Xn_scaled = Xn
 
-    # Build X_row (same preprocessing)
-    X_row = pd.DataFrame([{
-        **row[baseline_num].to_dict(),
-        **{k: v for k, v in pd.get_dummies(pd.DataFrame([row[baseline_cat].to_dict()]).fillna('Missing').astype(str), drop_first=True).iloc[0].to_dict().items()}
-    }])
-    # align columns
-    X_row = X_row.reindex(columns=X.columns, fill_value=0)
+    Xnew = pd.concat([Xc.reset_index(drop=True), Xn_scaled.reset_index(drop=True)], axis=1)
+    # add treatment column if present
+    if 'treatment' in df.columns:
+        Xnew['treatment'] = pd.to_numeric(df['treatment'], errors='coerce').fillna(0).astype(int).values
+    else:
+        Xnew['treatment'] = 0
+    # add treat x period interactions for all period_bin columns present
+    period_dummy_cols_local = [c for c in Xnew.columns if str(c).startswith('period_bin')]
+    for pcol in period_dummy_cols_local:
+        Xnew[f'treat_x_{pcol}'] = Xnew['treatment'] * Xnew[pcol]
+    # align to saved model columns if available
+    if model_columns is not None:
+        # add missing columns then reorder
+        for c in model_columns:
+            if c not in Xnew.columns:
+                Xnew[c] = 0.0
+        Xnew = Xnew[model_columns]
+    return Xnew
 
-    st.subheader("Per-patient predicted ΔRMST")
-    pred_val = lgbm.predict(X_row)[0]
-    st.write(f"Predicted ΔRMST (in {target_unit}): **{pred_val:.3f}**")
+# helper: patient-level X_cf builder (for causal forest)
+def build_X_patient(df_patient_row):
+    df = pd.DataFrame([df_patient_row]) if isinstance(df_patient_row, dict) else df_patient_row.copy().reset_index(drop=True)
+    # dummies using dummy_cols (from training)
+    Xc = pd.get_dummies(df[baseline_cat].astype(str), drop_first=True)
+    if isinstance(dummy_cols, (list, tuple)) and len(dummy_cols)>0:
+        Xc = Xc.reindex(columns=dummy_cols, fill_value=0)
+    # numeric
+    Xn = df[baseline_num].copy() if any([c in df.columns for c in baseline_num]) else pd.DataFrame(index=df.index)
+    if not Xn.empty:
+        for c in Xn.columns:
+            Xn[c] = pd.to_numeric(Xn[c], errors='coerce')
+        if 'train_medians_pp' in globals() and train_medians_pp is not None:
+            fill = train_medians_pp
+            Xn = Xn.fillna(fill)
+        else:
+            Xn = Xn.fillna(Xn.median())
+    Xfull = pd.concat([Xc.reset_index(drop=True), Xn.reset_index(drop=True)], axis=1).fillna(0)
+    # scaling if patient_scaler exists (this is optional)
+    if patient_scaler is not None:
+        try:
+            Xfull[baseline_num] = patient_scaler.transform(Xfull[baseline_num])
+        except Exception:
+            pass
+    return Xfull
 
-    # compute shap for that single row (use explainer)
-    explainer_local = explainer
-    shap_vals_row = explainer_local.shap_values(X_row)
-    st.write("Feature contributions (SHAP):")
-    # convert to DataFrame
-    sv_df = pd.DataFrame({"feature": X.columns, "shap": shap_vals_row.flatten(), "value": X_row.iloc[0].values})
-    sv_df = sv_df.sort_values("shap", key=lambda s: np.abs(s), ascending=False)
-    st.dataframe(sv_df.head(30))
+# === Main inference function ===
+def infer_new_patient(patient_data, return_probs=False):
+    """
+    patient_data: dict or 1-row DataFrame with baseline covariates.
+    returns: {'survival_curve': DataFrame(period, S_control, S_treat, days), 'CATEs': {h: val}}
+    """
+    # 1) pooled-logit survival: build pp rows and predict hazards under T=0 and T=1
+    if logit is None or model_columns is None:
+        print("Warning: pooled-logit or model_columns missing; survival cannot be computed.")
+        survival_df = pd.DataFrame()
+    else:
+        # create pp rows up to max period from training (use pp_test max if available)
+        max_period =  max( int(pp_medians.get('max_period', 60)) if isinstance(pp_medians, dict) and 'max_period' in pp_medians else 60, 60)
+        # safer: try to find pp_test global
+        try:
+            max_period = int(pp_test['period'].max())
+        except Exception:
+            pass
 
-    # show waterfall/force plot (render via HTML)
-    st.subheader("SHAP force plot (interactive)")
-    try:
-        st_shap_force_plot(explainer_local, shap_vals_row, X_row)
-    except Exception as e:
-        st.error("SHAP force plot failed: " + str(e))
+        # expand new patient to person-period
+        if isinstance(patient_data, dict):
+            df_base = pd.DataFrame([patient_data])
+        else:
+            df_base = patient_data.copy().reset_index(drop=True)
+        rows = []
+        for p in range(1, max_period+1):
+            r = df_base.iloc[0].to_dict()
+            r['period'] = p
+            r['period_month'] = p
+            r['treatment'] = r.get('treatment', 0)
+            # time_since_rt_days if used
+            r['time_since_rt_days'] = p * interval_days
+            rows.append(r)
+        df_pp_new = pd.DataFrame(rows)
+        X_new = build_X_for_pp(df_pp_new)
+        # two counterfactuals
+        X_ctrl = X_new.copy()
+        X_ctrl['treatment'] = 0
+        for pcol in [c for c in X_ctrl.columns if c.startswith('period_bin')]:
+            X_ctrl[f'treat_x_{pcol}'] = 0
+        X_trt = X_new.copy()
+        X_trt['treatment'] = 1
+        for pcol in [c for c in X_trt.columns if c.startswith('period_bin')]:
+            X_trt[f'treat_x_{pcol}'] = X_trt.get(pcol,0)
+        # align
+        X_ctrl = X_ctrl.reindex(columns=model_columns, fill_value=0.0)
+        X_trt  = X_trt.reindex(columns=model_columns, fill_value=0.0)
+        p0 = logit.predict_proba(X_ctrl)[:,1]
+        p1 = logit.predict_proba(X_trt)[:,1]
+        S0 = np.cumprod(1 - p0)
+        S1 = np.cumprod(1 - p1)
+        survival_df = pd.DataFrame({'period': np.arange(1, len(S0)+1), 'S_control': S0, 'S_treat': S1})
+        survival_df['days'] = survival_df['period'] * interval_days
+        if return_probs:
+            survival_df['p0'] = p0
+            survival_df['p1'] = p1
 
-# If run directly, launch Streamlit app
-if __name__ == "__main__":
-    # If executed by "streamlit run app_shap_lightgbm.py", Streamlit will run this file and this block executes.
-    run_streamlit()
+    # 2) CATEs from patient-level forests
+    cate_preds = {}
+    for h in FOREST_LIST:
+        forest_path = os.path.join(FOREST_FOLDER, f"forest_{h}m.joblib")
+        if not os.path.exists(forest_path):
+            cate_preds[h] = np.nan
+            continue
+        try:
+            est = joblib.load(forest_path)
+            Xcf = build_X_patient(patient_data)
+            # reorder to the columns used when training forest (most forests were fit using dummy_cols + base_num)
+            # if est expects a certain column order we try to match: use training Xtr_patient.columns if saved
+            if hasattr(Xcf, "values"):
+                arr = Xcf.values
+            else:
+                arr = np.asarray(Xcf)
+            pred = est.effect(arr)
+            if isinstance(pred, (list, np.ndarray)):
+                cate_preds[h] = float(np.asarray(pred).flatten()[0])
+            else:
+                cate_preds[h] = float(pred)
+        except Exception as e:
+            print(f"Forest load/predict failed for {h} m: {e}")
+            cate_preds[h] = np.nan
+
+    return {'survival_curve': survival_df, 'CATEs': cate_preds}
+
+# === Example ===
+# new_patient = {'age':62, 'sex':'F', 'primary_site_group':'Oropharynx', 'stage':'III', 'hpv_clean':'HPV_Positive', 'treatment':0}
+# out = infer_new_patient(new_patient)
+# out['survival_curve'].head(), out['CATEs']
