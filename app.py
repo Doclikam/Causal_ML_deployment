@@ -9,78 +9,119 @@ import scipy.signal as signal
 from statsmodels.nonparametric.smoothers_lowess import lowess
 from sklearn.metrics import pairwise_distances_argmin_min
 from io import BytesIO
-
-
-
-
-import joblib, os, numpy as np, pandas as pd
 from scipy.special import expit
 from sklearn.preprocessing import StandardScaler
 
-# === CONFIG: point these to your saved files ===
-BASE = "/content/drive/MyDrive/outputs_hncc_project"   # adjust to folder you want
-POOLED_LOGIT_PATH = os.path.join(BASE, "pooled_logit_logreg_saga.joblib")
-POOLED_COLS_PATH  = os.path.join(BASE, "pooled_logit_model_columns.csv")   # or X_train_columns.joblib
-PP_SCALER_PATH    = os.path.join(BASE, "pp_scaler.joblib")
-PP_MEDIANS_PATH   = os.path.join(BASE, "pp_train_medians.joblib")
-PP_COLLAPSE_PATH  = os.path.join(BASE, "pp_collapse_maps.joblib")
-KM_CENSOR_PATH    = os.path.join(BASE, "km_censor_train.joblib")
-FOREST_FOLDER     = os.path.join(BASE, "forests")   # folder with forest_3m.joblib etc.
-PATIENT_SCALER    = os.path.join(BASE, "causal_patient_scaler.joblib")  # optional
-FOREST_LIST       = [3,6,12,18,36,60]
+# app.py
+import streamlit as st
+import pandas as pd
+import numpy as np
+import joblib, os
+import matplotlib.pyplot as plt
+from math import ceil
 
-interval_days = 30
-period_labels = ['0-3','4-6','7-12','13-24','25-60','60+']
+st.set_page_config(page_title="H&N Causal Survival Explorer", layout="wide")
 
-# === Load artifacts safely ===
+# ----------------- CONFIG: edit these paths to your artifact folder -----------------
+BASE = "/content/drive/MyDrive/outputs_hncc_project"   # <<-- change if needed
+POOLED_LOGIT = os.path.join(BASE, "pooled_logit_logreg_saga.joblib")
+POOLED_COLS  = os.path.join(BASE, "pooled_logit_model_columns.csv")
+PP_SCALER    = os.path.join(BASE, "pp_scaler.joblib")
+PP_MEDIANS   = os.path.join(BASE, "pp_train_medians.joblib")
+PP_COLLAPSE  = os.path.join(BASE, "pp_collapse_maps.joblib")
+KM_CENSOR    = os.path.join(BASE, "km_censor_train.joblib")
+FOREST_DIR   = os.path.join(BASE, "forests")   # expects forest_3m.joblib etc.
+FOREST_HORIZONS = [3,6,12,18,36,60]
+INTERVAL_DAYS = 30
+# -------------------------------------------------------------------------------
+
+st.title("📈 HNCC — Survival & Individual Treatment Effects Explorer")
+st.markdown(
+    """
+    **What this app does**
+    - Load saved models (pooled logistic + causal forests) from disk.
+    - Predict adjusted survival curves (Chemo+RT vs RT-alone) for a new patient.
+    - Try to predict horizon-specific CATEs (risk difference) from causal forests.
+    - Compute RMST difference (days) up to a chosen horizon.
+    """
+)
+
+# ----- Load artifacts (graceful)
+@st.cache_resource
 def safe_load(path):
-    if os.path.exists(path):
-        return joblib.load(path)
-    return None
-
-logit = safe_load(POOLED_LOGIT_PATH)
-model_columns = None
-if os.path.exists(POOLED_COLS_PATH):
     try:
-        model_columns = pd.read_csv(POOLED_COLS_PATH).squeeze().tolist()
+        return joblib.load(path) if os.path.exists(path) else None
+    except Exception as e:
+        st.warning(f"Failed to load {os.path.basename(path)}: {e}")
+        return None
+
+logit = safe_load(POOLED_LOGIT)
+model_cols = None
+if os.path.exists(POOLED_COLS):
+    try:
+        model_cols = pd.read_csv(POOLED_COLS).squeeze().tolist()
     except Exception:
-        # maybe joblib
-        model_columns = safe_load(POOLED_COLS_PATH)
-pp_scaler = safe_load(PP_SCALER_PATH)
-pp_medians = safe_load(PP_MEDIANS_PATH)  # pandas Series or dict
-collapse_maps = safe_load(PP_COLLAPSE_PATH) or {}
-km_censor = safe_load(KM_CENSOR_PATH)
+        model_cols = safe_load(POOLED_COLS)
+pp_scaler = safe_load(PP_SCALER)
+pp_medians = safe_load(PP_MEDIANS)
+collapse_maps = safe_load(PP_COLLAPSE) or {}
+km_censor = safe_load(KM_CENSOR)
 
-# patient-level design templates (from training objects)
-# dummy_cols come from how you built Xtr_patient: saved earlier as 'dummy_cols' or 'train_dummy_columns'
-DUMMY_COLS_PATH = os.path.join(BASE, "train_dummy_columns.joblib")
-dummy_cols = safe_load(DUMMY_COLS_PATH) or []     # used for causal forest patient-level dummies
+st.sidebar.header("Artifact status")
+st.sidebar.write("Pooled-logit loaded:", "✅" if logit is not None else "❌")
+st.sidebar.write("Model columns present:", "✅" if model_cols is not None else "❌")
+st.sidebar.write("PP scaler present:", "✅" if pp_scaler is not None else "❌")
+st.sidebar.write("Forests folder exists:", "✅" if os.path.isdir(FOREST_DIR) else "❌ (create and put forest_3m.joblib etc.)")
+st.sidebar.write("KM censorer:", "✅" if km_censor is not None else "❌")
 
-# baseline lists used when training forests (should match what you trained with)
-baseline_cat = ['sex','smoking_status_clean','primary_site_group','pathology_group','hpv_clean']
-baseline_num = ['age','ecog_ps','BED_eff','EQD2','smoking_py_clean']
-# if your training used scaler for patient-level features:
-patient_scaler = safe_load(PATIENT_SCALER)
+# ----- Data input
+st.header("1) Input patient(s)")
+st.markdown("You can either upload a CSV (rows = patients), or fill the single-patient form below. Required columns for single-patient form are shown; additional baseline covariates are optional.")
 
-# helper: build pooled-logit X for person-period rows
-def build_X_for_pp(df_pp):
+uploaded = st.file_uploader("Upload patient CSV (optional)", type=["csv"])
+if uploaded is not None:
+    df_input = pd.read_csv(uploaded)
+    st.write("Preview of uploaded data (first 5 rows):")
+    st.dataframe(df_input.head())
+else:
+    st.markdown("**Single patient form**")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        age = st.number_input("age", min_value=18, max_value=120, value=62)
+        sex = st.selectbox("sex", options=["F","M"], index=0)
+        hpv_clean = st.selectbox("hpv_clean", options=["HPV_Positive","HPV_Negative","Unknown"], index=2)
+    with col2:
+        primary_site_group = st.text_input("primary_site_group", value="Oropharynx")
+        pathology_group = st.text_input("pathology_group", value="")
+        smoking_status_clean = st.selectbox("smoking_status_clean", options=["Never","Former","Current","Unknown"], index=0)
+    with col3:
+        ecog_ps = st.number_input("ecog_ps", min_value=0, max_value=4, value=1)
+        smoking_py_clean = st.number_input("smoking_py_clean", min_value=0, max_value=500, value=0)
+        treatment = st.selectbox("treatment (current)", options=[0,1], index=0)
+
+    df_input = pd.DataFrame([{
+        'age': age, 'sex': sex, 'hpv_clean': hpv_clean,
+        'primary_site_group': primary_site_group, 'pathology_group': pathology_group,
+        'smoking_status_clean': smoking_status_clean, 'ecog_ps': ecog_ps,
+        'smoking_py_clean': smoking_py_clean, 'treatment': treatment
+    }])
+
+# ----- Helper functions (safe minimal versions)
+def build_X_for_pp_min(df_pp):
     df = df_pp.copy()
-    # apply collapse maps
-    for c, keep in (collapse_maps.items() if collapse_maps else []):
+    # collapse rare categories if collapse_maps available
+    for c,allowed in collapse_maps.items():
         if c in df.columns:
-            df[c] = df[c].astype(str).where(df[c].astype(str).isin(keep), 'Other')
-    # ensure period_bin exists
-    if 'period_month' not in df.columns:
-        df['period_month'] = df['period'].astype(int) if 'period' in df.columns else 1
-    if 'period_bin' not in df.columns:
-        bins = [0,3,6,12,24,60, np.inf]
-        labels = ['0-3','4-6','7-12','13-24','25-60','60+']
-        df['period_bin'] = pd.cut(df['period_month'], bins=bins, labels=labels, right=True)
-
-    # categorical dummies (use the exact categorical columns used in training)
+            df[c] = df[c].astype(str).where(df[c].astype(str).isin(allowed), 'Other')
+    if 'period' not in df.columns:
+        df['period'] = np.arange(1, len(df)+1)
+    df['period_month'] = df['period'].astype(int)
+    bins = [0,3,6,12,24,60,np.inf]
+    labels = ['0-3','4-6','7-12','13-24','25-60','60+']
+    df['period_bin'] = pd.cut(df['period_month'], bins=bins, labels=labels, right=True)
+    # categorical dummies (simple)
     cat_cols = [c for c in ['period_bin','sex','smoking_status_clean','primary_site_group','subsite_clean','stage','hpv_clean'] if c in df.columns]
     Xc = pd.get_dummies(df[cat_cols].astype(str), drop_first=True) if len(cat_cols)>0 else pd.DataFrame(index=df.index)
-
     # numeric
     num_cols = [c for c in ['age','ecog_ps','smoking_py_clean','time_since_rt_days'] if c in df.columns]
     Xn = df[num_cols].copy() if len(num_cols)>0 else pd.DataFrame(index=df.index)
@@ -91,149 +132,171 @@ def build_X_for_pp(df_pp):
             Xn = Xn.fillna(pd.Series(pp_medians))
         else:
             Xn = Xn.fillna(Xn.median())
-
-        # scale
         if pp_scaler is not None:
             try:
-                Xn_scaled = pd.DataFrame(pp_scaler.transform(Xn), columns=Xn.columns, index=Xn.index)
-            except Exception as e:
-                # feature name mismatch -> fall back to numeric-only transform without names
-                Xn_scaled = pd.DataFrame(StandardScaler().fit_transform(Xn), columns=Xn.columns, index=Xn.index)
-        else:
-            Xn_scaled = Xn
-    else:
-        Xn_scaled = Xn
-
-    Xnew = pd.concat([Xc.reset_index(drop=True), Xn_scaled.reset_index(drop=True)], axis=1)
-    # add treatment column if present
+                Xn = pd.DataFrame(pp_scaler.transform(Xn), columns=Xn.columns, index=Xn.index)
+            except Exception:
+                # fallback
+                Xn = Xn
+    Xnew = pd.concat([Xc.reset_index(drop=True), Xn.reset_index(drop=True)], axis=1)
     if 'treatment' in df.columns:
         Xnew['treatment'] = pd.to_numeric(df['treatment'], errors='coerce').fillna(0).astype(int).values
     else:
         Xnew['treatment'] = 0
-    # add treat x period interactions for all period_bin columns present
-    period_dummy_cols_local = [c for c in Xnew.columns if str(c).startswith('period_bin')]
-    for pcol in period_dummy_cols_local:
-        Xnew[f'treat_x_{pcol}'] = Xnew['treatment'] * Xnew[pcol]
-    # align to saved model columns if available
-    if model_columns is not None:
-        # add missing columns then reorder
-        for c in model_columns:
+    # add interactions for period dummies if any
+    period_cols = [c for c in Xnew.columns if c.startswith('period_bin')]
+    for pcol in period_cols:
+        Xnew[f"treat_x_{pcol}"] = Xnew['treatment'] * Xnew[pcol]
+    # align to model columns
+    if model_cols is not None:
+        for c in model_cols:
             if c not in Xnew.columns:
                 Xnew[c] = 0.0
-        Xnew = Xnew[model_columns]
+        Xnew = Xnew[model_cols]
     return Xnew
 
-# helper: patient-level X_cf builder (for causal forest)
-def build_X_patient(df_patient_row):
-    df = pd.DataFrame([df_patient_row]) if isinstance(df_patient_row, dict) else df_patient_row.copy().reset_index(drop=True)
-    # dummies using dummy_cols (from training)
-    Xc = pd.get_dummies(df[baseline_cat].astype(str), drop_first=True)
-    if isinstance(dummy_cols, (list, tuple)) and len(dummy_cols)>0:
-        Xc = Xc.reindex(columns=dummy_cols, fill_value=0)
-    # numeric
-    Xn = df[baseline_num].copy() if any([c in df.columns for c in baseline_num]) else pd.DataFrame(index=df.index)
-    if not Xn.empty:
-        for c in Xn.columns:
-            Xn[c] = pd.to_numeric(Xn[c], errors='coerce')
-        if 'train_medians_pp' in globals() and train_medians_pp is not None:
-            fill = train_medians_pp
-            Xn = Xn.fillna(fill)
-        else:
-            Xn = Xn.fillna(Xn.median())
-    Xfull = pd.concat([Xc.reset_index(drop=True), Xn.reset_index(drop=True)], axis=1).fillna(0)
-    # scaling if patient_scaler exists (this is optional)
-    if patient_scaler is not None:
-        try:
-            Xfull[baseline_num] = patient_scaler.transform(Xfull[baseline_num])
-        except Exception:
-            pass
-    return Xfull
+def predict_survival_for_patient(patient_row, max_period=60):
+    # build person-period rows up to max_period
+    rows = []
+    for p in range(1, max_period+1):
+        r = patient_row.copy()
+        r['period'] = p
+        r['period_month'] = p
+        r['time_since_rt_days'] = p * INTERVAL_DAYS if 'time_since_rt_days' not in r else r['time_since_rt_days']
+        rows.append(r)
+    pp = pd.DataFrame(rows)
+    Xpp = build_X_for_pp_min(pp)
+    # two counterfactuals
+    Xctrl = Xpp.copy()
+    if 'treatment' in Xctrl.columns:
+        Xctrl['treatment'] = 0
+    for pcol in [c for c in Xctrl.columns if c.startswith('period_bin')]:
+        Xctrl[f"treat_x_{pcol}"] = 0
+    Xtrt = Xpp.copy()
+    Xtrt['treatment'] = 1
+    for pcol in [c for c in Xtrt.columns if c.startswith('period_bin')]:
+        Xtrt[f"treat_x_{pcol}"] = Xtrt.get(pcol, 0)
+    # align
+    if model_cols is not None:
+        Xctrl = Xctrl.reindex(columns=model_cols, fill_value=0.0)
+        Xtrt  = Xtrt.reindex(columns=model_cols, fill_value=0.0)
+    # predict
+    p0 = logit.predict_proba(Xctrl)[:,1] if logit is not None else np.zeros(Xctrl.shape[0])
+    p1 = logit.predict_proba(Xtrt)[:,1] if logit is not None else np.zeros(Xtrt.shape[0])
+    S0 = np.cumprod(1 - p0)
+    S1 = np.cumprod(1 - p1)
+    out = pd.DataFrame({'period': np.arange(1, len(S0)+1), 'S_control': S0, 'S_treat': S1})
+    out['days'] = out['period'] * INTERVAL_DAYS
+    return out, p0, p1
 
-# === Main inference function ===
-def infer_new_patient(patient_data, return_probs=False):
-    """
-    patient_data: dict or 1-row DataFrame with baseline covariates.
-    returns: {'survival_curve': DataFrame(period, S_control, S_treat, days), 'CATEs': {h: val}}
-    """
-    # 1) pooled-logit survival: build pp rows and predict hazards under T=0 and T=1
-    if logit is None or model_columns is None:
-        print("Warning: pooled-logit or model_columns missing; survival cannot be computed.")
-        survival_df = pd.DataFrame()
-    else:
-        # create pp rows up to max period from training (use pp_test max if available)
-        max_period =  max( int(pp_medians.get('max_period', 60)) if isinstance(pp_medians, dict) and 'max_period' in pp_medians else 60, 60)
-        # safer: try to find pp_test global
-        try:
-            max_period = int(pp_test['period'].max())
-        except Exception:
-            pass
+# ----- Run inference for first patient in df_input
+st.header("2) Model output (single patient preview)")
+patient0 = df_input.iloc[0].to_dict()
+# Safety checks
+if logit is None or model_cols is None:
+    st.error("Pooled-logit artifacts missing. Please set BASE to a folder with pooled_logit and model columns.")
+else:
+    max_period = 60
+    survival_df, p0, p1 = predict_survival_for_patient(patient0, max_period=max_period)
+    st.subheader("Adjusted marginal survival curve (pooled-logit)")
+    st.write("Table (first 10 rows):")
+    st.dataframe(survival_df.head(10))
 
-        # expand new patient to person-period
-        if isinstance(patient_data, dict):
-            df_base = pd.DataFrame([patient_data])
-        else:
-            df_base = patient_data.copy().reset_index(drop=True)
-        rows = []
-        for p in range(1, max_period+1):
-            r = df_base.iloc[0].to_dict()
-            r['period'] = p
-            r['period_month'] = p
-            r['treatment'] = r.get('treatment', 0)
-            # time_since_rt_days if used
-            r['time_since_rt_days'] = p * interval_days
-            rows.append(r)
-        df_pp_new = pd.DataFrame(rows)
-        X_new = build_X_for_pp(df_pp_new)
-        # two counterfactuals
-        X_ctrl = X_new.copy()
-        X_ctrl['treatment'] = 0
-        for pcol in [c for c in X_ctrl.columns if c.startswith('period_bin')]:
-            X_ctrl[f'treat_x_{pcol}'] = 0
-        X_trt = X_new.copy()
-        X_trt['treatment'] = 1
-        for pcol in [c for c in X_trt.columns if c.startswith('period_bin')]:
-            X_trt[f'treat_x_{pcol}'] = X_trt.get(pcol,0)
-        # align
-        X_ctrl = X_ctrl.reindex(columns=model_columns, fill_value=0.0)
-        X_trt  = X_trt.reindex(columns=model_columns, fill_value=0.0)
-        p0 = logit.predict_proba(X_ctrl)[:,1]
-        p1 = logit.predict_proba(X_trt)[:,1]
-        S0 = np.cumprod(1 - p0)
-        S1 = np.cumprod(1 - p1)
-        survival_df = pd.DataFrame({'period': np.arange(1, len(S0)+1), 'S_control': S0, 'S_treat': S1})
-        survival_df['days'] = survival_df['period'] * interval_days
-        if return_probs:
-            survival_df['p0'] = p0
-            survival_df['p1'] = p1
+    # RMST up to N months (selectable)
+    horizon_months = st.slider("Compute RMST difference up to (months)", min_value=3, max_value=60, value=36, step=3)
+    tau_days = horizon_months * INTERVAL_DAYS
+    # compute discrete RMST under each
+    def rmst_from(hazards, interval_days, tau_days):
+        surv = 1.0
+        rmst = 0.0
+        cum = 0
+        for h in hazards:
+            if cum >= tau_days:
+                break
+            length = min(interval_days, tau_days - cum)
+            rmst += surv * length
+            surv *= (1 - h)
+            cum += interval_days
+        return rmst
+    rmst_ct = rmst_from(p0, INTERVAL_DAYS, tau_days)
+    rmst_tr = rmst_from(p1, INTERVAL_DAYS, tau_days)
+    st.metric("ΔRMST (treated − control) in days", f"{rmst_tr - rmst_ct:.1f} days")
+    st.write(f"RMST treated: {rmst_tr:.1f} days, RMST control: {rmst_ct:.1f} days")
 
-    # 2) CATEs from patient-level forests
-    cate_preds = {}
-    for h in FOREST_LIST:
-        forest_path = os.path.join(FOREST_FOLDER, f"forest_{h}m.joblib")
-        if not os.path.exists(forest_path):
-            cate_preds[h] = np.nan
-            continue
-        try:
-            est = joblib.load(forest_path)
-            Xcf = build_X_patient(patient_data)
-            # reorder to the columns used when training forest (most forests were fit using dummy_cols + base_num)
-            # if est expects a certain column order we try to match: use training Xtr_patient.columns if saved
-            if hasattr(Xcf, "values"):
-                arr = Xcf.values
-            else:
-                arr = np.asarray(Xcf)
-            pred = est.effect(arr)
-            if isinstance(pred, (list, np.ndarray)):
-                cate_preds[h] = float(np.asarray(pred).flatten()[0])
-            else:
-                cate_preds[h] = float(pred)
-        except Exception as e:
-            print(f"Forest load/predict failed for {h} m: {e}")
-            cate_preds[h] = np.nan
+    # Plot survival curves
+    fig, ax = plt.subplots(figsize=(6,4))
+    ax.step(survival_df['days'], np.concatenate(([1.0], survival_df['S_control'][:-1])), where='post', label='RT-alone (adjusted)')
+    ax.step(survival_df['days'], np.concatenate(([1.0], survival_df['S_treat'][:-1])), where='post', label='Chemo+RT (adjusted)')
+    ax.set_xlabel("Days since RT start"); ax.set_ylabel("Survival probability")
+    ax.set_title("Adjusted survival (marginal)")
+    ax.legend(); ax.grid(alpha=0.2)
+    st.pyplot(fig)
 
-    return {'survival_curve': survival_df, 'CATEs': cate_preds}
+# ----- Try to get patient-level CATEs from forests
+st.header("3) Horizon CATEs (causal forests)")
+st.write("We will attempt to load horizon forests and predict patient-level CATEs (risk differences). If you see `NaN` values, see the troubleshooting notes below.")
 
-# === Example ===
-# new_patient = {'age':62, 'sex':'F', 'primary_site_group':'Oropharynx', 'stage':'III', 'hpv_clean':'HPV_Positive', 'treatment':0}
-# out = infer_new_patient(new_patient)
-# out['survival_curve'].head(), out['CATEs']
+cate_results = {}
+for h in FOREST_HORIZONS:
+    fpath = os.path.join(FOREST_DIR, f"forest_{h}m.joblib")
+    if not os.path.exists(fpath):
+        cate_results[h] = np.nan
+        continue
+    try:
+        est = joblib.load(fpath)
+        # build patient-level X aligned to training: we assume training used simple baseline dummies + numeric
+        dfp = pd.DataFrame([patient0])
+        Xc = pd.get_dummies(dfp[[c for c in ['sex','smoking_status_clean','primary_site_group','pathology_group','hpv_clean'] if c in dfp.columns]].astype(str), drop_first=True)
+        # try to reindex to saved dummy template if present
+        dummy_template_path = os.path.join(BASE, "train_dummy_columns.joblib")
+        if os.path.exists(dummy_template_path):
+            dummy_cols = joblib.load(dummy_template_path)
+            Xc = Xc.reindex(columns=dummy_cols, fill_value=0)
+        Xn = dfp[[c for c in ['age','ecog_ps','BED_eff','EQD2','smoking_py_clean'] if c in dfp.columns]].copy()
+        # scale if needed
+        if os.path.exists(os.path.join(BASE, "causal_patient_scaler.joblib")):
+            try:
+                scaler = joblib.load(os.path.join(BASE, "causal_patient_scaler.joblib"))
+                Xn[Xn.columns] = scaler.transform(Xn)
+            except Exception:
+                pass
+        Xcf = pd.concat([Xc.reset_index(drop=True), Xn.reset_index(drop=True)], axis=1).fillna(0)
+        arr = Xcf.values
+        res = est.effect(arr)
+        cate_results[h] = float(np.asarray(res).flatten()[0])
+    except Exception as e:
+        cate_results[h] = np.nan
+        st.warning(f"Forest load/predict failed for {h}m: {e}")
+
+st.table(pd.DataFrame.from_dict(cate_results, orient='index', columns=['CATE (prob points)']))
+
+# ----- Explanations & decision support
+st.header("4) How to interpret & recommended next steps (user-friendly)")
+st.markdown("""
+**Interpretation**
+- `S_control` and `S_treat` are *adjusted* survival probabilities (model-based). The difference `S_treat - S_control` is the modelled absolute benefit (probability points) in that interval.
+- `ΔRMST` (shown above) summarizes benefit in days up to the selected horizon. Example: ΔRMST = +60 days means the treated counterfactual keeps the patient alive 60 more days on average up to the horizon.
+- `CATE_h` (if available) is the model's estimate of the individual treatment effect for that horizon (probability points). Positive = higher survival with Chemo+RT.
+
+**If CATEs are NaN**
+- Typical cause: the causal forest expects exact dummy columns + numeric ordering used during training. Make sure you saved and load `train_dummy_columns.joblib` and `causal_patient_scaler.joblib` when serving.
+- Another cause: forest trained on different patient set (different categorical collapse). Recreate collapse maps or rebuild forests on patient-level X and save the dummy template.
+
+**Decision support (example)**
+- If ΔRMST > 90 days (3 months) and the patient is fit (low ECOG), consider recommending Chemo+RT; weigh against toxicity/contraindications.
+- If CATE_h > 0.02 (2 percentage points) consistently across important horizons and uncertainty is low, that supports benefit.
+- Always combine model output with clinical judgement and multidisciplinary discussion.
+
+**Data format for batch upload**
+- CSV with one row per patient and columns: `patient_id`, `age`, `sex`, `ecog_ps`, `smoking_status_clean`, `smoking_py_clean`, `primary_site_group`, `pathology_group`, `hpv_clean`, `treatment` (0/1 if available). For pooled-logit prediction we will create person-period rows internally.
+""")
+
+st.markdown("### Troubleshooting checklist")
+st.write("""
+- ✅ Ensure `pooled_logit_logreg_saga.joblib` and `pooled_logit_model_columns.csv` are present in BASE.
+- ✅ Ensure `pp_scaler.joblib`, `pp_train_medians.joblib`, `pp_collapse_maps.joblib` are present when using pooled-logit.
+- ✅ For forest CATEs: ensure `train_dummy_columns.joblib` and `causal_patient_scaler.joblib` are present and were created from the same pipeline used to train forests.
+- If you need, use the training notebook to re-run the patient-level forest pipeline and save `train_dummy_columns.joblib` and `causal_patient_scaler.joblib`.
+""")
+
+st.caption("Created for a user-friendly clinical-facing demo. Always show results alongside clinical review.")
