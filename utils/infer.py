@@ -4,6 +4,18 @@ import joblib
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
+import joblib
+import requests
+import io
+
+BASE_URL = "https://raw.githubusercontent.com/Doclikam/Causal_ML_deployment/main/outputs/"
+
+def load_joblib_from_github(path):
+    url = BASE_URL + path
+    response = requests.get(url)
+    response.raise_for_status()
+    return joblib.load(io.BytesIO(response.content))
+
 
 # Defaults (overridable by setting globals before import)
 OUTDIR = globals().get("OUTDIR", "outputs")
