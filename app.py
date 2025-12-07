@@ -46,13 +46,20 @@ if submitted:
     }
 
     with st.spinner("Running inference (loading models from GitHub)..."):
-        out = infer_new_patient_fixed(patient, base_url=BASE_URL, max_period=int(max_period))
+        out = infer_new_patient_fixed(
+    patient,
+    base_url=BASE_URL,
+    max_period_override=int(max_period),  
+    return_raw=True                       
+)
+
 
     # show errors / warnings
     if out.get("errors"):
         st.error("Warnings / errors during inference:")
-        for e in out["errors"]:
-            st.write("- " + str(e))
+        for k, v in out["errors"].items():
+            st.write(f"- **{k}**: {v}")
+
 
     # survival curve
     surv = out.get("survival_curve")
