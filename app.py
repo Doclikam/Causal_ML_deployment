@@ -17,14 +17,14 @@ from utils.infer import infer_new_patient_fixed
 
 BASE_URL = "https://raw.githubusercontent.com/Doclikam/Causal_ML_deployment/main/outputs"
 
-pooled_logit = load_joblib_from_github("pooled_logit_logreg_saga.joblib")
+pooled_logit = load_joblib_from_github(BASE_URL + "pooled_logit_logreg_saga.joblib")
 model_columns = pd.read_csv(BASE_URL + "pooled_logit_model_columns.csv")
-forests_bundle = load_joblib_from_github("causal_forests_period_horizons_patient_level.joblib")
-patient_columns = load_joblib_from_github("causal_patient_columns.joblib")
-patient_scaler = load_joblib_from_github("causal_patient_scaler.joblib")
-collapse_maps = load_joblib_from_github("pp_collapse_maps.joblib")
-pp_scaler = load_joblib_from_github("pp_scaler.joblib")
-train_medians_pp = load_joblib_from_github("pp_train_medians.joblib")
+forests = load_joblib_from_github(BASE_URL + "causal_forests_period_horizons_patient_level.joblib")
+patient_columns = load_joblib_from_github(BASE_URL + "causal_patient_columns.joblib")
+scaler = load_joblib_from_github(BASE_URL + "causal_patient_scaler.joblib")
+pp_scaler = load_joblib_from_github(BASE_URL + "pp_scaler.joblib")
+collapse_maps = load_joblib_from_github(BASE_URL + "pp_collapse_maps.joblib")
+train_medians_pp = load_joblib_from_github(BASE_URL + "pp_train_medians.joblib")
 
 st.set_page_config(page_title="Causal Inference — Quick infer", layout="wide")
 
