@@ -15,21 +15,12 @@ from math import ceil
 import plotly.graph_objects as go
 from utils.infer import infer_new_patient_fixed 
 
-BASE_URL = "https://raw.githubusercontent.com/Doclikam/Causal_ML_deployment/main/outputs"
 
-pooled_logit = load_joblib_from_github(BASE_URL + "pooled_logit_logreg_saga.joblib")
-model_columns = pd.read_csv(BASE_URL + "pooled_logit_model_columns.csv")
-forests = load_joblib_from_github(BASE_URL + "causal_forests_period_horizons_patient_level.joblib")
-patient_columns = load_joblib_from_github(BASE_URL + "causal_patient_columns.joblib")
-scaler = load_joblib_from_github(BASE_URL + "causal_patient_scaler.joblib")
-pp_scaler = load_joblib_from_github(BASE_URL + "pp_scaler.joblib")
-collapse_maps = load_joblib_from_github(BASE_URL + "pp_collapse_maps.joblib")
-train_medians_pp = load_joblib_from_github(BASE_URL + "pp_train_medians.joblib")
 
 st.set_page_config(page_title="Causal Inference — Quick infer", layout="wide")
 
 st.sidebar.header("Settings")
-BASE_URL = st.sidebar.text_input("BASE_URL (raw github path)", value="https://raw.githubusercontent.com/<user>/<repo>/main/outputs/")
+BASE_URL = st.sidebar.text_input("BASE_URL (raw github path)", value="https://raw.githubusercontent.com/Doclikam/Causal_ML_deployment/main/outputs/")
 max_period = st.sidebar.number_input("Max periods (months)", value=60, min_value=6, max_value=360)
 
 st.title("Individual patient inference")
