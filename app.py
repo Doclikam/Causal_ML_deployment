@@ -13,47 +13,36 @@ from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
 from math import ceil
 import plotly.graph_objects as go
-from utils.infer import infer_new_patient_fixed 
-import requests
 from utils.infer import infer_new_patient_fixed
+import requests
 
-# ----------------- STYLE CONSTANTS -----------------
+# ----------------- STYLE & CONFIG -----------------
+# Color palette 
 COLOR_RT = "#1f77b4"        # calm blue
 COLOR_CHEMO = "#2ca02c"     # medical green
 COLOR_BENEFIT = "#1f77b4"   # blue for benefit
 COLOR_HARM = "#d62728"      # red only for harm
 
-
-# ----------------- CONFIG -----------------
 st.set_page_config(
     page_title="Head & Neck Cancer – Personalized Treatment Effect Explorer",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
 st.title("Head & Neck Cancer: RT vs ChemoRT Outcome Explorer")
 
 st.markdown(
     """
-    *Interactive tool to visualise expected survival and treatment effects  
-    for patients receiving radiotherapy alone versus chemoradiotherapy.*  
+    *A clinician-facing tool to explore expected survival and treatment effects  
+    for patients receiving radiotherapy alone versus chemoradiotherapy (Chemo-RT).*  
     """
 )
 
 st.markdown(
-    """
-    *Interactive tool to visualise expected survival and treatment effects  
-    for patients receiving radiotherapy alone versus chemoradiotherapy.*  
-    """
-)
-st.markdown(
-    "<small style='color: grey;'>Designed for clinicians to support risk–benefit discussions with patients. Not a substitute for clinical judgment.
-    Estimates are model-based and derived from retrospective data.</small>",
+    "<small style='color: grey;'>Designed to support risk–benefit discussions with patients. "
+    "Not a substitute for clinical judgment. Estimates are model-based and derived from retrospective data.</small>",
     unsafe_allow_html=True
 )
-
- 
-Estimates are model-based and derived from retrospective data.
-
 
 # Defaults for loading artifacts
 DEFAULT_BASE_URL = "https://raw.githubusercontent.com/Doclikam/Causal_ML_deployment/main/outputs/"
@@ -92,7 +81,6 @@ rmst_horizon_months = st.sidebar.number_input(
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Note**: The app first looks in the local `outputs/` folder.\n"
                     "If artifacts are missing, it will try to load them from the GitHub URL.")
-
 
 # ----------------- HELPERS -----------------
 def load_csv_with_fallback(filename: str):
@@ -203,12 +191,11 @@ def interpret_delta_months(delta_m: float) -> str:
 
 def describe_cate_table(cates: dict) -> str:
     """Generate short narrative from per-horizon CATEs."""
-    # Keep only horizons with valid CATE
-    vals = [(h, v["CATE"]) for h, v in cates.items() if v["CATE"] is not None and not np.isnan(v["CATE"])]
+    vals = [(h, v["CATE"]) for h, v in cates.items()
+            if v.get("CATE") is not None and not np.isnan(v.get("CATE"))]
     if not vals:
         return "The causal forest could not provide reliable horizon-specific risk differences (CATEs) for this patient."
 
-    # convert horizons to months if possible
     parsed = []
     for h, v in vals:
         try:
@@ -217,7 +204,6 @@ def describe_cate_table(cates: dict) -> str:
             mh = np.nan
         parsed.append((mh, v))
 
-    # find maximum benefit (most negative) and maximum harm (most positive)
     arr = np.array([v for _, v in parsed])
     mh_arr = np.array([mh for mh, _ in parsed])
 
@@ -257,6 +243,123 @@ def describe_cate_table(cates: dict) -> str:
     return "\n".join(text)
 
 
+def generate_patient_summary(patient, rmst_res, surv_df, horizon_months: int) -> str:
+    """
+    Generate a short, patient-facing summary (2–3 sentences).
+    """
+    rmst_t = rmst_res.get("rmst_treat", np.nan)
+    rmst_c = rmst_res.get("rmst_control", np.nan)
+    delta_m = rmst_res.get("delta", np.nan)
+
+    # Try to get survival probabilities at the chosen horizon
+    p_rt, p_chemo = np.nan, np.nan
+    if surv_df is not None and not surv_df.empty:
+        s = surv_df.sort_values("days").copy()
+        h_days = horizon_months * 30.0
+        s_h = s[s["days"] <= h_days]
+        if not s_h.empty:
+            p_rt = s_h["S_control"].iloc[-1]
+            p_chemo = s_h["S_treat"].iloc[-1]
+
+    # Core message about benefit/harm
+    if np.isnan(delta_m):
+        main = (
+            f"For a patient with features similar to this one, "
+            f"the model could not reliably estimate the difference between radiotherapy alone and "
+            f"chemoradiotherapy over {horizon_months} months."
+        )
+    else:
+        if delta_m > 0:
+            phrasing = "a modest gain"
+        elif delta_m < 0:
+            phrasing = "a modest loss"
+        else:
+            phrasing = "no clear difference"
+
+        main = (
+            f"For a patient like this, over about {horizon_months} months the model predicts "
+            f"{phrasing} in time spent alive and event-free with chemoradiotherapy compared with radiotherapy alone "
+            f"(about {delta_m:+.1f} months difference)."
+        )
+
+    # Add survival probabilities if available
+    surv_sentence = ""
+    if not np.isnan(p_rt) and not np.isnan(p_chemo):
+        surv_sentence = (
+            f" By {horizon_months} months, the estimated chance of being alive and event-free is "
+            f"around {p_rt*100:.0f}% with radiotherapy alone and {p_chemo*100:.0f}% with chemoradiotherapy."
+        )
+
+    disclaimer = (
+        " These figures come from statistical models based on previous patients and are approximate. "
+        "They are meant to support, not replace, a discussion between you and your treatment team."
+    )
+
+    return main + surv_sentence + disclaimer
+
+
+def build_print_summary(patient, rmst_res, surv_df, horizon_months, cates) -> str:
+    lines = []
+    lines.append("Head & Neck Cancer: RT vs Chemo-RT Summary")
+    lines.append("=" * 60)
+    lines.append("")
+
+    # Patient snapshot
+    lines.append("Patient snapshot (as entered):")
+    for k, v in patient.items():
+        lines.append(f"  - {k}: {v}")
+    lines.append("")
+
+    # RMST
+    rmst_t = rmst_res.get("rmst_treat", np.nan)
+    rmst_c = rmst_res.get("rmst_control", np.nan)
+    delta_m = rmst_res.get("delta", np.nan)
+
+    lines.append(f"Restricted mean event-free survival up to {horizon_months} months:")
+    lines.append(f"  - RT alone:    {rmst_c:.1f} months" if not np.isnan(rmst_c) else "  - RT alone:    N/A")
+    lines.append(f"  - Chemo-RT:    {rmst_t:.1f} months" if not np.isnan(rmst_t) else "  - Chemo-RT:    N/A")
+    lines.append(f"  - ΔRMST (Chemo-RT − RT): {delta_m:+.1f} months" if not np.isnan(delta_m) else "  - ΔRMST:        N/A")
+    lines.append("")
+
+    # Survival at horizon (if available)
+    p_rt, p_chemo = np.nan, np.nan
+    if surv_df is not None and not surv_df.empty:
+        s = surv_df.sort_values("days").copy()
+        h_days = horizon_months * 30.0
+        s_h = s[s["days"] <= h_days]
+        if not s_h.empty:
+            p_rt = s_h["S_control"].iloc[-1]
+            p_chemo = s_h["S_treat"].iloc[-1]
+
+    if not np.isnan(p_rt) and not np.isnan(p_chemo):
+        lines.append(f"Estimated probability of being alive & event-free at {horizon_months} months:")
+        lines.append(f"  - RT alone:    {p_rt*100:.0f}%")
+        lines.append(f"  - Chemo-RT:    {p_chemo*100:.0f}%")
+        lines.append("")
+
+    # CATE summary (short)
+    if cates:
+        lines.append("Horizon-specific absolute risk differences (CATE; Chemo-RT − RT):")
+        for h, v in sorted(cates.items(), key=lambda kv: float(kv[0])):
+            cate = v.get("CATE")
+            if cate is None or np.isnan(cate):
+                continue
+            lines.append(f"  - {h} months: {cate*100:.1f} percentage points")
+        lines.append("")
+
+    # Patient-facing summary
+    lines.append("Clinical summary (patient-facing):")
+    lines.append("")
+    lines.append(generate_patient_summary(patient, rmst_res, surv_df, horizon_months))
+    lines.append("")
+
+    lines.append("Notes:")
+    lines.append("  - These estimates are model-based and derived from retrospective data.")
+    lines.append("  - They should be interpreted together with clinical judgment, comorbidities, and patient preferences.")
+    lines.append("")
+
+    return "\n".join(lines)
+
 # ----------------- LAYOUT: TABS -----------------
 tab_patient, tab_timecourse = st.tabs(["👤 Single patient", "⏱ Population time-course"])
 
@@ -275,225 +378,269 @@ with tab_patient:
 - Summarises the gain or loss in **event-free time** as **ΔRMST (restricted mean survival time)** over a horizon you choose.
         """)
 
-    # patient form 
-with st.form("patient_form"):
+    # patient form
+    with st.form("patient_form"):
+        c1, c2, c3 = st.columns(3)
 
-    c1, c2, c3 = st.columns(3)
+        # ---- COLUMN 1: demographics ----
+        with c1:
+            age = st.number_input("Age (years)", value=62, min_value=18, max_value=99)
+            sex = st.selectbox("Sex", ["Male", "Female", "Missing"], index=1)
 
-    # ---- COLUMN 1: demographics ----
-    with c1:
-        age = st.number_input("Age (years)", value=62, min_value=18, max_value=99)
-        sex = st.selectbox("Sex", ["Male", "Female", "Missing"], index=1)
-
-    # ---- COLUMN 2: tumour site & histology ----
-    with c2:
-        primary_site_group = st.selectbox(
-            "Primary site group",
-            ["Oropharynx", "Nasopharynx", "Other_HNC", "Missing"],
-            index=0
-        )
-        pathology_group = st.selectbox(
-            "Pathology group",
-            ["SCC", "Other_epithelial", "Other_rare", "Missing"],
-            index=0
-        )
-
-    # ---- COLUMN 3: HPV + TNM ----
-    with c3:
-        hpv_clean = st.selectbox(
-            "HPV status (cleaned)",
-            ["HPV_Positive", "HPV_Negative", "HPV_Unknown", "Missing"],
-            index=0
-        )
-        stage = st.selectbox(
-            "Overall Stage (AJCC-like)",
-            ["I", "II", "III", "IV", "Missing"],
-            index=2
-        )
-
-    st.markdown("### TNM classification")
-
-    c4, c5, c6 = st.columns(3)
-    with c4:
-        t_cat = st.selectbox("T category", ["T1", "T2", "T3", "T4", "Tx"], index=1)
-    with c5:
-        n_cat = st.selectbox("N category", ["N0", "N1", "N2", "N3", "Nx"], index=0)
-    with c6:
-        m_cat = st.selectbox("M category", ["M0", "M1", "Mx"], index=0)
-
-    treatment = st.selectbox(
-        "Planned treatment strategy",
-        options=[0, 1],
-        format_func=lambda x: "RT alone" if x == 0 else "Chemo-RT",
-        index=0
-    )
-
-    submitted = st.form_submit_button("Estimate personalised outcomes")
-
-
-if submitted:
-    patient = {
-        "age": age,
-        "sex": sex,
-        "primary_site_group": primary_site_group,
-        "pathology_group": pathology_group,
-        "hpv_clean": hpv_clean,
-        "stage": stage,
-        "t": t_cat,
-        "n": n_cat,
-        "m": m_cat,
-        "treatment": treatment
-    }
-
-    with st.spinner("Calculating personalised survival and treatment benefit..."):
-        out = infer_new_patient_fixed(
-            patient_data=patient,
-            outdir=OUTDIR,
-            base_url=BASE_URL,
-            max_period_override=int(max_period_months)
-        )
-
-        # Show any technical errors
-        if out.get("errors"):
-            st.error("Technical notes from the modelling pipeline:")
-            for k, msg in out["errors"].items():
-                st.write(f"- **{k}**: {msg}")
-
-        surv = out.get("survival_curve")
-        cates = out.get("CATEs", {})
-
-        # ---- SECTION A: SURVIVAL & RMST ----
-        st.subheader("2. Survival under RT vs Chemo-RT")
-
-        if surv is None or surv.empty:
-            st.warning("Survival curve could not be computed.")
-        else:
-            # Convert days -> months for display
-            surv_plot = surv.copy()
-            surv_plot["months"] = surv_plot["days"] / 30.0
-
-            # Plot survival curves
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=surv_plot["months"], y=surv_plot["S_control"],
-                mode="lines+markers", name="RT alone"
-            ))
-            fig.add_trace(go.Scatter(
-                x=surv_plot["months"], y=surv_plot["S_treat"],
-                mode="lines+markers", name="Chemo-RT"
-            ))
-            fig.update_layout(
-                xaxis_title="Time since RT start (months)",
-                yaxis_title="Probability alive & event-free",
-                yaxis=dict(range=[0, 1]),
-                legend_title="Strategy"
+        # ---- COLUMN 2: tumour site & histology ----
+        with c2:
+            primary_site_group = st.selectbox(
+                "Primary site group",
+                ["Oropharynx", "Nasopharynx", "Other_HNC", "Missing"],
+                index=0
             )
-            st.plotly_chart(fig, use_container_width=True)
+            pathology_group = st.selectbox(
+                "Pathology group",
+                ["SCC", "Other_epithelial", "Other_rare", "Missing"],
+                index=0
+            )
 
-            c1, c2 = st.columns([2, 1])
-            with c1:
-                st.markdown("**Table snapshot (first few time points):**")
-                st.dataframe(
-                    surv_plot[["period", "months", "S_control", "S_treat"]].head(),
-                    use_container_width=True
+        # ---- COLUMN 3: HPV + TNM ----
+        with c3:
+            hpv_clean = st.selectbox(
+                "HPV status (cleaned)",
+                ["HPV_Positive", "HPV_Negative", "HPV_Unknown", "Missing"],
+                index=0
+            )
+            stage = st.selectbox(
+                "Overall Stage (AJCC-like)",
+                ["I", "II", "III", "IV", "Missing"],
+                index=2
+            )
+
+        st.markdown("### TNM classification")
+
+        c4, c5, c6 = st.columns(3)
+        with c4:
+            t_cat = st.selectbox("T category", ["T1", "T2", "T3", "T4", "Tx"], index=1)
+        with c5:
+            n_cat = st.selectbox("N category", ["N0", "N1", "N2", "N3", "Nx"], index=0)
+        with c6:
+            m_cat = st.selectbox("M category", ["M0", "M1", "Mx"], index=0)
+
+        treatment = st.selectbox(
+            "Planned treatment strategy (both will be modelled for comparison)",
+            options=[0, 1],
+            format_func=lambda x: "RT alone" if x == 0 else "Chemo-RT",
+            index=0
+        )
+
+        submitted = st.form_submit_button("Estimate personalised outcomes")
+
+    if submitted:
+        patient = {
+            "age": age,
+            "sex": sex,
+            "primary_site_group": primary_site_group,
+            "pathology_group": pathology_group,
+            "hpv_clean": hpv_clean,
+            "stage": stage,
+            "t": t_cat,
+            "n": n_cat,
+            "m": m_cat,
+            "treatment": treatment
+        }
+
+        with st.spinner("Calculating personalised survival and treatment benefit..."):
+            out = infer_new_patient_fixed(
+                patient_data=patient,
+                outdir=OUTDIR,
+                base_url=BASE_URL,
+                max_period_override=int(max_period_months)
+            )
+
+            # Show any technical errors
+            if out.get("errors"):
+                st.error("Technical notes from the modelling pipeline:")
+                for k, msg in out["errors"].items():
+                    st.write(f"- **{k}**: {msg}")
+
+            surv = out.get("survival_curve")
+            cates = out.get("CATEs", {})
+
+            # ---- SECTION A: SURVIVAL & RMST ----
+            st.subheader("2. Survival under RT vs Chemo-RT")
+
+            if surv is None or surv.empty:
+                st.warning("Survival curve could not be computed.")
+                rmst_res = {"rmst_treat": np.nan, "rmst_control": np.nan, "delta": np.nan}
+            else:
+                # Convert days -> months for display
+                surv_plot = surv.copy()
+                surv_plot["months"] = surv_plot["days"] / 30.0
+
+                # Plot survival curves
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=surv_plot["months"], y=surv_plot["S_control"],
+                    mode="lines+markers", name="RT alone",
+                    line=dict(color=COLOR_RT),
+                    marker=dict(color=COLOR_RT)
+                ))
+                fig.add_trace(go.Scatter(
+                    x=surv_plot["months"], y=surv_plot["S_treat"],
+                    mode="lines+markers", name="Chemo-RT",
+                    line=dict(color=COLOR_CHEMO),
+                    marker=dict(color=COLOR_CHEMO)
+                ))
+                fig.update_layout(
+                    xaxis_title="Time since RT start (months)",
+                    yaxis_title="Probability alive & event-free",
+                    yaxis=dict(range=[0, 1]),
+                    legend_title="Strategy"
                 )
-            with c2:
-                st.markdown("**How to read this plot**")
-                st.markdown("""
+                st.plotly_chart(fig, use_container_width=True)
+
+                c1_, c2_ = st.columns([2, 1])
+                with c1_:
+                    st.markdown("**Table snapshot (first few time points):**")
+                    st.dataframe(
+                        surv_plot[["period", "months", "S_control", "S_treat"]].head(),
+                        use_container_width=True
+                    )
+                with c2_:
+                    st.markdown("**How to read this plot**")
+                    st.markdown("""
 - Each point shows, for a patient like this:
   - the estimated probability of being **alive and event-free** at that time  
   - under **RT alone** vs **Chemo-RT**.
 - A **higher curve** indicates **better outcomes**.
 - The difference between the two curves summarizes how much Chemo-RT might help or harm.
-                """)
+                    """)
 
-            # Compute RMST at chosen horizon
-            rmst_res = compute_rmst_from_survival(surv, rmst_horizon_months)
-            rmst_t = rmst_res["rmst_treat"]
-            rmst_c = rmst_res["rmst_control"]
-            delta_m = rmst_res["delta"]
+                # Compute RMST at chosen horizon
+                rmst_res = compute_rmst_from_survival(surv, rmst_horizon_months)
+                rmst_t = rmst_res["rmst_treat"]
+                rmst_c = rmst_res["rmst_control"]
+                delta_m = rmst_res["delta"]
 
-            st.subheader(f"3. RMST at {rmst_horizon_months} months (event-free time)")
+                st.subheader(f"3. RMST at {rmst_horizon_months} months (event-free time)")
 
-            m1, m2, m3 = st.columns(3)
-            m1.metric("RT alone: event-free months", f"{rmst_c:.1f}" if not np.isnan(rmst_c) else "N/A")
-            m2.metric("Chemo-RT: event-free months", f"{rmst_t:.1f}" if not np.isnan(rmst_t) else "N/A")
-            m3.metric("ΔRMST (Chemo-RT − RT)", f"{delta_m:+.1f} months" if not np.isnan(delta_m) else "N/A")
+                m1_, m2_, m3_ = st.columns(3)
+                m1_.metric("RT alone: event-free months", f"{rmst_c:.1f}" if not np.isnan(rmst_c) else "N/A")
+                m2_.metric("Chemo-RT: event-free months", f"{rmst_t:.1f}" if not np.isnan(rmst_t) else "N/A")
+                m3_.metric("ΔRMST (Chemo-RT − RT)", f"{delta_m:+.1f} months" if not np.isnan(delta_m) else "N/A")
 
-            st.markdown(interpret_delta_months(delta_m))
+                st.markdown(interpret_delta_months(delta_m))
 
-        # ---- SECTION B: CATE PER HORIZON ----
-        st.subheader("4. Horizon-specific treatment effect (CATE)")
+            # ---- SECTION B: CATE PER HORIZON ----
+            st.subheader("4. Horizon-specific treatment effect (CATE: absolute risk difference)")
 
-        if not cates:
-            st.info("No CATE estimates available for this patient.")
-        else:
-            # Build DataFrame for plotting
-            rows = []
-            for h, v in cates.items():
-                cate = v.get("CATE")
-                err = v.get("error")
-                try:
-                    mh = float(h)
-                except Exception:
-                    mh = np.nan
-                rows.append({
-                    "horizon_label": str(h),
-                    "horizon_months": mh,
-                    "CATE": cate,
-                    "CATE_percent": cate * 100 if cate is not None and not np.isnan(cate) else np.nan,
-                    "error": err
-                })
-            df_cate = pd.DataFrame(rows).sort_values("horizon_months")
+            if not cates:
+                st.info("No CATE estimates available for this patient.")
+            else:
+                # Build DataFrame for plotting
+                rows = []
+                for h, v in cates.items():
+                    cate = v.get("CATE")
+                    err = v.get("error")
+                    try:
+                        mh = float(h)
+                    except Exception:
+                        mh = np.nan
+                    rows.append({
+                        "horizon_label": str(h),
+                        "horizon_months": mh,
+                        "CATE": cate,
+                        "CATE_percent": cate * 100 if cate is not None and not np.isnan(cate) else np.nan,
+                        "error": err
+                    })
+                df_cate = pd.DataFrame(rows).sort_values("horizon_months")
 
-            # split valid vs errored
-            valid = df_cate[df_cate["CATE"].notna()].copy()
-            errors_cate = df_cate[df_cate["CATE"].isna() & df_cate["error"].notna()]
+                # split valid vs errored
+                valid = df_cate[df_cate["CATE"].notna()].copy()
+                errors_cate = df_cate[df_cate["CATE"].isna() & df_cate["error"].notna()]
 
-            if not valid.empty:
-                # color: benefit (negative) vs harm (positive)
-                colors = [
-                    "rgba(0, 120, 200, 0.8)" if x < 0 else "rgba(220, 80, 80, 0.8)"
-                    for x in valid["CATE_percent"]
-                ]
+                if not valid.empty:
+                    # color: benefit (negative) vs harm (positive)
+                    colors = [
+                        COLOR_BENEFIT if x < 0 else COLOR_HARM
+                        for x in valid["CATE_percent"]
+                    ]
 
-                fig_c = go.Figure()
-                fig_c.add_trace(go.Bar(
-                    x=valid["horizon_months"],
-                    y=valid["CATE_percent"],
-                    marker_color=colors,
-                    text=[f"{v:.1f}%" for v in valid["CATE_percent"]],
-                    textposition="outside"
-                ))
-                fig_c.add_hline(y=0, line_dash="dash", line_color="gray")
-                fig_c.update_layout(
-                    xaxis_title="Horizon (months)",
-                    yaxis_title="Absolute risk difference (Chemo-RT − RT, % points)",
-                    title="Per-horizon CATE for this patient"
-                )
-                st.plotly_chart(fig_c, use_container_width=True)
+                    fig_c = go.Figure()
+                    fig_c.add_trace(go.Bar(
+                        x=valid["horizon_months"],
+                        y=valid["CATE_percent"],
+                        marker_color=colors,
+                        text=[f"{v:.1f}%" for v in valid["CATE_percent"]],
+                        textposition="outside"
+                    ))
+                    fig_c.add_hline(y=0, line_dash="dash", line_color="gray")
+                    fig_c.update_layout(
+                        xaxis_title="Horizon (months)",
+                        yaxis_title="Absolute risk difference (Chemo-RT − RT, % points)",
+                        title="Per-horizon CATE for this patient"
+                    )
+                    st.plotly_chart(fig_c, use_container_width=True)
 
-                st.markdown(describe_cate_table(cates))
+                    st.markdown(describe_cate_table(cates))
 
-            if not errors_cate.empty:
-                with st.expander("Technical issues for some horizons"):
-                    st.table(errors_cate[["horizon_label", "error"]])
+                if not errors_cate.empty:
+                    with st.expander("Technical issues for some horizons"):
+                        st.table(errors_cate[["horizon_label", "error"]])
+
+            # ---- SECTION C: Clinical summary card + download ----
+            st.subheader("5. Clinical summary (patient-facing text)")
+
+            summary_text = generate_patient_summary(
+                patient=patient,
+                rmst_res=rmst_res,
+                surv_df=surv,
+                horizon_months=rmst_horizon_months
+            )
+
+            st.markdown(
+                f"""
+<div style="
+    border-radius: 8px;
+    padding: 12px 16px;
+    border: 1px solid #e2e8f0;
+    background-color: #f8fafc;
+    ">
+<p style="margin: 0; font-size: 0.95rem;">
+{summary_text}
+</p>
+</div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            printable_summary = build_print_summary(
+                patient=patient,
+                rmst_res=rmst_res,
+                surv_df=surv,
+                horizon_months=rmst_horizon_months,
+                cates=cates
+            )
+
+            st.download_button(
+                label="📄 Download 1-page summary (text)",
+                data=printable_summary,
+                file_name="hnc_treatment_summary.txt",
+                mime="text/plain"
+            )
 
 # ---------- TAB 2: POPULATION TIME-COURSE ----------
 with tab_timecourse:
-    st.subheader("Population-level time-course of treatment effect")
+    st.subheader("Population-level pattern of treatment effect over time")
 
     st.markdown("""
-This panel summarizes the **time-varying behaviour of Chemo-RT vs RT**  
-across the whole dataset used to train the models.
+This panel summarizes how the **relative and absolute effects** of Chemo-RT vs RT  
+behave over time in the study population.
 
 It shows:
-- **Marginal hazards** by period (how often events occur per time block)
-- **Hazard ratio (HR)** over time with bootstrap CIs
-- **Contribution to ΔRMST** from each period
+- **Interval event rates** (hazards) under each strategy  
+- **Time-varying hazard ratio (HR)** with confidence intervals  
+- How each time window contributes to the overall **difference in event-free time (ΔRMST)**  
 
-This is **not patient-specific**, but helps you understand **when** treatment
-seems to matter most in the data.
+These summaries are not patient-specific, but help you understand **when** treatment intensity  
+seems most influential in the underlying data.
     """)
 
     tv = load_csv_with_fallback("timevarying_summary_by_period.csv")
@@ -513,12 +660,16 @@ seems to matter most in the data.
             if "haz_control" in tv.columns:
                 fig_h.add_trace(go.Scatter(
                     x=tv["months"], y=tv["haz_control"],
-                    mode="lines+markers", name="RT hazard"
+                    mode="lines+markers", name="RT hazard",
+                    line=dict(color=COLOR_RT),
+                    marker=dict(color=COLOR_RT)
                 ))
             if "haz_treated" in tv.columns:
                 fig_h.add_trace(go.Scatter(
                     x=tv["months"], y=tv["haz_treated"],
-                    mode="lines+markers", name="Chemo-RT hazard"
+                    mode="lines+markers", name="Chemo-RT hazard",
+                    line=dict(color=COLOR_CHEMO),
+                    marker=dict(color=COLOR_CHEMO)
                 ))
             fig_h.update_layout(
                 xaxis_title="Time (months)",
@@ -533,7 +684,9 @@ seems to matter most in the data.
                 fig_hr = go.Figure()
                 fig_hr.add_trace(go.Scatter(
                     x=tv["months"], y=tv["hr"],
-                    mode="lines+markers", name="HR (Chemo-RT / RT)"
+                    mode="lines+markers", name="HR (Chemo-RT / RT)",
+                    line=dict(color=COLOR_CHEMO),
+                    marker=dict(color=COLOR_CHEMO)
                 ))
                 fig_hr.add_trace(go.Scatter(
                     x=np.concatenate([tv["months"], tv["months"][::-1]]),
@@ -558,7 +711,8 @@ seems to matter most in the data.
         fig_dr.add_trace(go.Bar(
             x=tv["months"],
             y=tv["delta_rmst_period_months"],
-            name="ΔRMST contribution (months)"
+            name="ΔRMST contribution (months)",
+            marker_color=COLOR_BENEFIT
         ))
         fig_dr.add_hline(y=0, line_dash="dash", line_color="gray")
         fig_dr.update_layout(
