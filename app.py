@@ -250,55 +250,97 @@ with tab_patient:
 - Summarises the gain or loss in **event-free time** as **ΔRMST (restricted mean survival time)** over a horizon you choose.
         """)
 
-    # Simple baseline form (you can add more fields later)
+    # Simple baseline form 
     with st.form("patient_form"):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            age = st.number_input("Age (years)", value=62, min_value=18, max_value=99)
-            sex = st.selectbox("Sex", ["Male", "Female", "Missing"], index=1)
-        with c2:
-            primary_site_group = st.selectbox(
-                "Primary site group",
-                ["Oropharynx", "Nasopharynx", "Other_HNC", "Missing"],
-                index=0
-            )
-            pathology_group = st.selectbox(
-                "Pathology group",
-                ["SCC", "Other_epithelial", "Other_rare", "Missing"],
-                index=0
-            )
-        with c3:
-            hpv_clean = st.selectbox(
-                "HPV status (cleaned)",
-                ["HPV_Positive", "HPV_Negative", "HPV_Unknown", "Missing"],
-                index=0
-            )
-            treatment = st.selectbox(
-                "Planned treatment strategy",
-                options=[0, 1],
-                format_func=lambda x: "0 – RT alone" if x == 0 else "1 – Chemo-RT",
-                index=0
-            )
+    c1, c2, c3 = st.columns(3)
+    
+    # ---- COLUMN 1: demographics ----
+    with c1:
+        age = st.number_input("Age (years)", value=62, min_value=18, max_value=99)
+        sex = st.selectbox("Sex", ["Male", "Female", "Missing"], index=1)
 
-        submitted = st.form_submit_button("Run model")
+    # ---- COLUMN 2: tumour site & histology ----
+    with c2:
+        primary_site_group = st.selectbox(
+            "Primary site group",
+            ["Oropharynx", "Nasopharynx", "Other_HNC", "Missing"],
+            index=0
+        )
+        pathology_group = st.selectbox(
+            "Pathology group",
+            ["SCC", "Other_epithelial", "Other_rare", "Missing"],
+            index=0
+        )
+
+    # ---- COLUMN 3: HPV + TNM ----
+    with c3:
+        hpv_clean = st.selectbox(
+            "HPV status (cleaned)",
+            ["HPV_Positive", "HPV_Negative", "HPV_Unknown", "Missing"],
+            index=0
+        )
+        # Overall clinical stage (if you captured it in your data as 'stage')
+        stage = st.selectbox(
+            "Overall stage (AJCC-like)",
+            ["I", "II", "III", "IV", "Missing"],
+            index=2  # default III
+        )
+
+    st.markdown("### TNM classification")
+
+    c4, c5, c6 = st.columns(3)
+    with c4:
+        t_cat = st.selectbox(
+            "T category",
+            ["T1", "T2", "T3", "T4", "Tx"],
+            index=1
+        )
+    with c5:
+        n_cat = st.selectbox(
+            "N category",
+            ["N0", "N1", "N2", "N3", "Nx"],
+            index=0
+        )
+    with c6:
+        m_cat = st.selectbox(
+            "M category",
+            ["M0", "M1", "Mx"],
+            index=0
+        )
+
+    treatment = st.selectbox(
+        "Planned treatment strategy",
+        options=[0, 1],
+        format_func=lambda x: "0 – RT alone" if x == 0 else "1 – Chemo-RT",
+        index=0
+    )
+
+    submitted = st.form_submit_button("Compare RT vs Chemo-RT for this patient")
+
+        submitted = st.form_submit_button("Compare RT vs Chemo-RT for this patient")
+
 
     if submitted:
-        patient = {
-            "age": age,
-            "sex": sex,
-            "primary_site_group": primary_site_group,
-            "pathology_group": pathology_group,
-            "hpv_clean": hpv_clean,
-            "treatment": treatment
-        }
+    patient = {
+        "age": age,
+        "sex": sex,
+        "primary_site_group": primary_site_group,
+        "pathology_group": pathology_group,
+        "hpv_clean": hpv_clean,
+        "stage": stage,   # overall stage
+        "t": t_cat,       # TNM T
+        "n": n_cat,       # TNM N
+        "m": m_cat,       # TNM M
+        "treatment": treatment
+    }
 
-        with st.spinner("Loading models and computing predictions..."):
-            out = infer_new_patient_fixed(
-                patient_data=patient,
-                outdir=OUTDIR,
-                base_url=BASE_URL,
-                max_period_override=int(max_period_months)
-            )
+    with st.spinner("Calculating personalised survival and treatment benefit..."):
+        out = infer_new_patient_fixed(
+            patient_data=patient,
+            outdir=OUTDIR,
+            base_url=BASE_URL,
+            max_period_override=int(max_period_months)
+        )
 
         # Show any technical errors
         if out.get("errors"):
