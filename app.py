@@ -361,7 +361,10 @@ def build_print_summary(patient, rmst_res, surv_df, horizon_months, cates) -> st
     return "\n".join(lines)
 
 # ----------------- LAYOUT: TABS -----------------
-tab_patient, tab_timecourse = st.tabs(["👤 Single patient", "⏱ Population time-course"])
+tab_patient, tab_timecourse, tab_insights = st.tabs(
+    ["👤 Single patient", "⏱ Population time-course", "🧠 AI Insights"]
+)
+
 
 # ---------- TAB 1: SINGLE PATIENT ----------
 with tab_patient:
