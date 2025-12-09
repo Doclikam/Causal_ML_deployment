@@ -17,6 +17,13 @@ from utils.infer import infer_new_patient_fixed
 import requests
 from utils.infer import infer_new_patient_fixed
 
+# ----------------- STYLE CONSTANTS -----------------
+COLOR_RT = "#1f77b4"        # calm blue
+COLOR_CHEMO = "#2ca02c"     # medical green
+COLOR_BENEFIT = "#1f77b4"   # blue for benefit
+COLOR_HARM = "#d62728"      # red only for harm
+
+
 # ----------------- CONFIG -----------------
 st.set_page_config(
     page_title="Head & Neck Cancer – Personalized Treatment Effect Explorer",
