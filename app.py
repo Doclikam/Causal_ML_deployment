@@ -19,12 +19,22 @@ from utils.infer import infer_new_patient_fixed
 
 # ----------------- CONFIG -----------------
 st.set_page_config(
-    page_title="Head & Neck RT – Treatment Effect Explorer",
+    page_title="Head & Neck Cancer – Personalized Treatment Effect Explorer",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("Head & Neck Cancer Treatment Effect Explorer")
+st.markdown(
+    """
+    *Interactive tool to visualise expected survival and treatment effects  
+    for patients receiving radiotherapy alone versus chemoradiotherapy.*  
+    """
+)
+st.markdown(
+    "<small style='color: grey;'>Designed for clinicians to support risk–benefit discussions with patients. Not a substitute for clinical judgment.</small>",
+    unsafe_allow_html=True
+)
+
 st.caption("""
 Decision-support demo – not a replacement for clinical judgment.  
 Estimates are model-based and derived from retrospective data.
