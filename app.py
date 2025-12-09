@@ -317,8 +317,6 @@ with tab_patient:
 
     submitted = st.form_submit_button("Compare RT vs Chemo-RT for this patient")
 
-        submitted = st.form_submit_button("Compare RT vs Chemo-RT for this patient")
-
 
     if submitted:
     patient = {
