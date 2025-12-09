@@ -1,9 +1,9 @@
 import os
 from io import BytesIO
 from typing import Optional
+from datetime import date
 
 import joblib
-import matplotlib.pyplot as plt  # kept if you want later
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -32,12 +32,13 @@ This tool uses data-driven models to compare **radiotherapy alone (RT)** with
 **concurrent chemoradiotherapy (Chemo-RT)** for an individual patient.
 
 It estimates:
-- The chance of being **alive and well (no death from any cause)** over time
-- The **extra time alive and well** that Chemo-RT may offer, in **months**
-- How similar patients in the dataset have done
+
+- The chance of being **alive and well** (no death from any cause) over time  
+- The **extra time alive and well** that Chemo-RT may offer, in **months**  
+- How similar patients in the dataset have done  
 
 > ⚠️ These are **model-based estimates from retrospective data**.  
-> They are intended to support – not replace – clinical judgment and guidelines.
+> They support – but do not replace – clinical judgment and guidelines.
 """
 )
 
@@ -337,7 +338,7 @@ def build_print_summary(patient, rmst_res, surv_df, horizon_months, cates) -> st
             lines.append(f"  - {h} months: {cate*100:.1f} percentage points")
         lines.append("")
 
-    lines.append("Patient-facing explainer:")
+    lines.append("Patient report summary:")
     lines.append("")
     lines.append(generate_patient_summary(patient, rmst_res, surv_df, horizon_months))
     lines.append("")
@@ -552,6 +553,10 @@ with tab_patient:
                 index=0,
                 help="0 = fully active; 1 = restricted in strenuous activity; 2–3 = limited / often bedridden."
             )
+            start_date = st.date_input(
+                "Planned RT start date",
+                value=date.today()
+            )
 
         with c2:
             primary_site_group = st.selectbox(
@@ -650,10 +655,12 @@ with tab_patient:
             # ---------- SURVIVAL & SUMMARY ----------
             st.subheader("2. Summary at your chosen time point")
 
+            rmst_res = {"rmst_treat": np.nan, "rmst_control": np.nan, "delta": np.nan}
+            p_rt = p_chemo = np.nan
+            label = "Estimate uncertain"
+
             if surv is None or surv.empty:
                 st.warning("Survival curve could not be computed for this patient.")
-                rmst_res = {"rmst_treat": np.nan, "rmst_control": np.nan, "delta": np.nan}
-                p_rt = p_chemo = np.nan
             else:
                 rmst_res = compute_rmst_from_survival(surv, rmst_horizon_months)
                 rmst_t = rmst_res["rmst_treat"]
@@ -667,60 +674,51 @@ with tab_patient:
                 if not s_h.empty:
                     p_rt = s_h["S_control"].iloc[-1]
                     p_chemo = s_h["S_treat"].iloc[-1]
-                else:
-                    p_rt = p_chemo = np.nan
 
                 label = categorize_benefit(delta_m, p_rt, p_chemo)
 
-                # Summary metrics card
+                # Summary metrics card (shorter labels to avoid ellipses)
                 c_sum1, c_sum2, c_sum3, c_sum4 = st.columns(4)
                 c_sum1.metric(
-                    "Average time alive & well\nRT alone",
-                    f"{rmst_c:.1f} m" if not np.isnan(rmst_c) else "N/A"
+                    "RT alone\n(avg months)",
+                    f"{rmst_c:.1f}" if not np.isnan(rmst_c) else "N/A"
                 )
                 c_sum2.metric(
-                    "Average time alive & well\nChemo-RT",
-                    f"{rmst_t:.1f} m" if not np.isnan(rmst_t) else "N/A"
+                    "Chemo-RT\n(avg months)",
+                    f"{rmst_t:.1f}" if not np.isnan(rmst_t) else "N/A"
                 )
                 c_sum3.metric(
-                    "Extra time with Chemo-RT",
-                    f"{delta_m:+.1f} m" if not np.isnan(delta_m) else "N/A"
+                    "Extra time\nChemo-RT − RT",
+                    f"{delta_m:+.1f}" if not np.isnan(delta_m) else "N/A"
                 )
                 if not np.isnan(p_rt) and not np.isnan(p_chemo):
                     diff_surv = (p_chemo - p_rt) * 100.0
                     c_sum4.metric(
-                        f"Difference in chance alive & well\nat {rmst_horizon_months} m",
-                        f"{diff_surv:+.1f} %pts"
+                        f"Diff in chance\nalive & well at {rmst_horizon_months}m",
+                        f"{diff_surv:+.1f} %"
                     )
                 else:
                     c_sum4.metric(
-                        f"Difference in chance alive & well\nat {rmst_horizon_months} m",
+                        f"Diff in chance\nalive & well at {rmst_horizon_months}m",
                         "N/A"
                     )
 
-                st.markdown(
-                    f"""
-<div style="
-  border-radius: 8px;
-  padding: 10px 14px;
-  border: 1px solid #e2e8f0;
-  background-color: #f8fafc;">
-<b>Model interpretation:</b> {label}<br>
-{interpret_delta_months(delta_m)}
-</div>
-                    """,
-                    unsafe_allow_html=True
-                )
+                # Bold markdown (no HTML wrapper so ** works)
+                st.markdown(f"**Model interpretation:** {label}")
+                st.markdown(interpret_delta_months(delta_m))
 
-            # Simple vs advanced view
             st.markdown("---")
-            simple_view = st.toggle("Show advanced model details", value=False)
 
+            # ---------- SURVIVAL CURVES ----------
             if surv is not None and not surv.empty:
                 surv_plot = surv.copy()
                 surv_plot["months"] = surv_plot["days"] / 30.0
+                # calendar dates based on RT start date
+                surv_plot["date"] = pd.to_datetime(start_date) + pd.to_timedelta(surv_plot["days"], unit="D")
 
                 st.subheader("3. Survival over time (RT vs Chemo-RT)")
+
+                # Plot with months on x-axis
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
                     x=surv_plot["months"], y=surv_plot["S_control"],
@@ -744,24 +742,48 @@ with tab_patient:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
+                # Optional toggle for calendar-date display
+                if st.checkbox("Show calendar dates on the time axis", value=False):
+                    fig_date = go.Figure()
+                    fig_date.add_trace(go.Scatter(
+                        x=surv_plot["date"], y=surv_plot["S_control"],
+                        mode="lines+markers",
+                        name="RT alone",
+                        line=dict(color=COLOR_RT),
+                        marker=dict(color=COLOR_RT)
+                    ))
+                    fig_date.add_trace(go.Scatter(
+                        x=surv_plot["date"], y=surv_plot["S_treat"],
+                        mode="lines+markers",
+                        name="Chemo-RT",
+                        line=dict(color=COLOR_CHEMO),
+                        marker=dict(color=COLOR_CHEMO)
+                    ))
+                    fig_date.update_layout(
+                        xaxis_title="Calendar date",
+                        yaxis_title="Probability alive & well",
+                        yaxis=dict(range=[0, 1]),
+                        legend_title="Strategy"
+                    )
+                    st.plotly_chart(fig_date, use_container_width=True)
+
                 with st.expander("Table of modelled survival over time (first few rows)"):
                     st.dataframe(
-                        surv_plot[["period", "months", "S_control", "S_treat"]].head(),
+                        surv_plot[["period", "months", "date", "S_control", "S_treat"]].head(),
                         use_container_width=True
                     )
 
-            # ---------- ADVANCED DETAILS ----------
-            if simple_view:
-                # still show patient-facing summary & download
-                st.subheader("4. Patient-friendly paragraph")
-                summary_text = generate_patient_summary(
-                    patient=patient,
-                    rmst_res=rmst_res,
-                    surv_df=surv,
-                    horizon_months=rmst_horizon_months
-                )
-                st.markdown(
-                    f"""
+            # ---------- PATIENT REPORT SUMMARY ----------
+            st.subheader("4. Patient report summary")
+
+            summary_text = generate_patient_summary(
+                patient=patient,
+                rmst_res=rmst_res,
+                surv_df=surv,
+                horizon_months=rmst_horizon_months
+            )
+            st.markdown(
+                f"""
 <div style="
     border-radius: 8px;
     padding: 12px 16px;
@@ -772,28 +794,31 @@ with tab_patient:
 {summary_text}
 </p>
 </div>
-                    """,
-                    unsafe_allow_html=True
-                )
+                """,
+                unsafe_allow_html=True
+            )
 
-                printable_summary = build_print_summary(
-                    patient=patient,
-                    rmst_res=rmst_res,
-                    surv_df=surv,
-                    horizon_months=rmst_horizon_months,
-                    cates=cates
-                )
+            printable_summary = build_print_summary(
+                patient=patient,
+                rmst_res=rmst_res,
+                surv_df=surv,
+                horizon_months=rmst_horizon_months,
+                cates=cates
+            )
 
-                st.download_button(
-                    label="📄 Download 1-page summary (text)",
-                    data=printable_summary,
-                    file_name="hnc_treatment_summary.txt",
-                    mime="text/plain"
-                )
+            st.download_button(
+                label="📄 Download patient report (text)",
+                data=printable_summary,
+                file_name="hnc_treatment_summary.txt",
+                mime="text/plain"
+            )
 
-            else:
-                # Advanced: CATEs, subgroup scorecard, etc.
-                st.subheader("4. Change in chance of being alive & well at different times")
+            # ---------- ADVANCED DETAILS ----------
+            show_advanced = st.checkbox("Show advanced model details (risk differences & subgroup patterns)", value=False)
+
+            if show_advanced:
+                # CATEs
+                st.subheader("5. Change in chance of being alive & well at different times")
 
                 if not cates:
                     st.info("No time-specific risk differences available for this patient.")
@@ -846,45 +871,6 @@ with tab_patient:
                         with st.expander("Technical issues at some time points"):
                             st.table(errors_cate[["horizon_label", "error"]])
 
-                st.subheader("5. Patient-friendly paragraph & download")
-
-                summary_text = generate_patient_summary(
-                    patient=patient,
-                    rmst_res=rmst_res,
-                    surv_df=surv,
-                    horizon_months=rmst_horizon_months
-                )
-                st.markdown(
-                    f"""
-<div style="
-    border-radius: 8px;
-    padding: 12px 16px;
-    border: 1px solid #e2e8f0;
-    background-color: #f8fafc;
-    ">
-<p style="margin: 0; font-size: 0.95rem;">
-{summary_text}
-</p>
-</div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-                printable_summary = build_print_summary(
-                    patient=patient,
-                    rmst_res=rmst_res,
-                    surv_df=surv,
-                    horizon_months=rmst_horizon_months,
-                    cates=cates
-                )
-
-                st.download_button(
-                    label="📄 Download 1-page summary (text)",
-                    data=printable_summary,
-                    file_name="hnc_treatment_summary.txt",
-                    mime="text/plain"
-                )
-
                 # Subgroup scorecard
                 st.subheader("6. How this patient compares with similar groups")
 
@@ -908,49 +894,52 @@ with tab_patient:
                     else:
                         metric_unit = scorecard_df["metric_unit"].iloc[0]
 
-                        if metric_unit == "days":
-                            display_df = scorecard_df.assign(
-                                rank_text=lambda d: d["rank_within_feature"].astype(str)
-                                + " / " + d["n_levels"].astype(str)
-                            )[[
-                                "feature",
-                                "patient_level",
-                                "n_in_level",
-                                "metric",
-                                "metric_months",
-                                "rank_text"
-                            ]].rename(columns={
-                                "feature": "Feature",
-                                "patient_level": "Patient subgroup",
-                                "n_in_level": "N in subgroup",
-                                "metric": "Mean extra time with Chemo-RT (days)",
-                                "metric_months": "Mean extra time (months)",
-                                "rank_text": "Rank within feature\n(1 = highest gain)",
-                            })
+                        # Show only top ~6 features in a simple horizontal bar chart
+                        top_n = min(6, len(scorecard_df))
+                        top_sc = scorecard_df.head(top_n).copy()
 
-                            st.dataframe(display_df, use_container_width=True)
+                        if metric_unit == "days":
+                            top_sc["label"] = top_sc["feature"] + " = " + top_sc["patient_level"].astype(str)
+                            top_sc["metric_months"] = top_sc["metric"] / 30.0
+
+                            fig_sc = go.Figure()
+                            fig_sc.add_trace(go.Bar(
+                                x=top_sc["metric_months"],
+                                y=top_sc["label"],
+                                orientation="h",
+                                marker_color=COLOR_BENEFIT
+                            ))
+                            fig_sc.update_layout(
+                                xaxis_title="Average extra time with Chemo-RT (months)",
+                                yaxis_title="Patient subgroup",
+                                title=f"Top subgroups where similar patients gained more time by {rmst_horizon_months}m"
+                            )
+                            st.plotly_chart(fig_sc, use_container_width=True)
 
                         else:
-                            hm = scorecard_df["horizon_months"].iloc[0]
-                            display_df = scorecard_df.assign(
-                                metric_percent=lambda d: d["metric"] * 100.0,
-                                rank_text=lambda d: d["rank_within_feature"].astype(str)
-                                + " / " + d["n_levels"].astype(str)
-                            )[[
-                                "feature",
-                                "patient_level",
-                                "n_in_level",
-                                "metric_percent",
-                                "rank_text"
-                            ]].rename(columns={
-                                "feature": "Feature",
-                                "patient_level": "Patient subgroup",
-                                "n_in_level": "N in subgroup",
-                                "metric_percent": f"Average difference at {int(hm)}m (% points)\n(Chemo-RT − RT)",
-                                "rank_text": "Rank within feature\n(1 = most favourable)",
-                            })
+                            hm = top_sc["horizon_months"].iloc[0]
+                            top_sc["label"] = top_sc["feature"] + " = " + top_sc["patient_level"].astype(str)
+                            top_sc["metric_percent"] = top_sc["metric"] * 100.0
 
-                            st.dataframe(display_df, use_container_width=True)
+                            fig_sc = go.Figure()
+                            fig_sc.add_trace(go.Bar(
+                                x=top_sc["metric_percent"],
+                                y=top_sc["label"],
+                                orientation="h",
+                                marker_color=[
+                                    COLOR_BENEFIT if v < 0 else COLOR_HARM
+                                    for v in top_sc["metric_percent"]
+                                ]
+                            ))
+                            fig_sc.update_layout(
+                                xaxis_title=f"Average difference at {int(hm)} months (% points, Chemo-RT − RT)",
+                                yaxis_title="Patient subgroup",
+                                title="Subgroups where similar patients did better or worse with Chemo-RT"
+                            )
+                            st.plotly_chart(fig_sc, use_container_width=True)
+
+                        with st.expander("See underlying subgroup table (optional)"):
+                            st.dataframe(scorecard_df, use_container_width=True)
 
 # ==========================================================
 # ---------- TAB 2: POPULATION EFFECT OVER TIME ----------
