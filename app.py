@@ -319,7 +319,7 @@ with tab_patient:
 
 
     if submitted:
-    patient = {
+        patient = {
         "age": age,
         "sex": sex,
         "primary_site_group": primary_site_group,
