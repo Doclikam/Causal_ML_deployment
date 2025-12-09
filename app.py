@@ -252,7 +252,7 @@ with tab_patient:
 
     # Simple baseline form 
     with st.form("patient_form"):
-    c1, c2, c3 = st.columns(3)
+        c1, c2, c3 = st.columns(3)
     
     # ---- COLUMN 1: demographics ----
     with c1:
