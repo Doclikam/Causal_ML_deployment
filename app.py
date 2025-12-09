@@ -23,6 +23,14 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+st.title("Head & Neck Cancer: RT vs ChemoRT Outcome Explorer")
+
+st.markdown(
+    """
+    *Interactive tool to visualise expected survival and treatment effects  
+    for patients receiving radiotherapy alone versus chemoradiotherapy.*  
+    """
+)
 
 st.markdown(
     """
@@ -31,14 +39,14 @@ st.markdown(
     """
 )
 st.markdown(
-    "<small style='color: grey;'>Designed for clinicians to support risk–benefit discussions with patients. Not a substitute for clinical judgment.</small>",
+    "<small style='color: grey;'>Designed for clinicians to support risk–benefit discussions with patients. Not a substitute for clinical judgment.
+    Estimates are model-based and derived from retrospective data.</small>",
     unsafe_allow_html=True
 )
 
-st.caption("""
-Decision-support demo – not a replacement for clinical judgment.  
+ 
 Estimates are model-based and derived from retrospective data.
-""")
+
 
 # Defaults for loading artifacts
 DEFAULT_BASE_URL = "https://raw.githubusercontent.com/Doclikam/Causal_ML_deployment/main/outputs/"
