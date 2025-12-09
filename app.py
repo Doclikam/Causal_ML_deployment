@@ -24,7 +24,7 @@ COLOR_BENEFIT = "#1f77b4"   # blue for benefit
 COLOR_HARM = "#d62728"      # red only for harm
 
 st.set_page_config(
-    page_title="Head & Neck Cancer – Personalized Treatment Effect Explorer",
+    page_title="Explore The Treatment Benefits Over Time For Head and Neck Cancer Patient",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -360,6 +360,87 @@ def build_print_summary(patient, rmst_res, surv_df, horizon_months, cates) -> st
 
     return "\n".join(lines)
 
+
+# === NEW: scorecard helper ====================================================
+def build_patient_scorecard_from_subgroups(patient: dict,
+                                           subgroup_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Build a simple scorecard for one patient using a subgroup summary table.
+
+    Expects subgroup_df to have at least:
+      - 'feature'  (e.g. 'hpv_clean', 'stage', 'primary_site_group')
+      - 'group'   (e.g. 'HPV_Negative', 'IVB')
+      - 'mean_CATE_days'
+      - optionally 'mean_CATE_months', 'n'
+
+    Returns a DataFrame with one row per feature where this patient's level is found,
+    including rank of that level within the feature (by mean_CATE_days, descending).
+    """
+    if subgroup_df is None or subgroup_df.empty:
+        return pd.DataFrame()
+
+    df = subgroup_df.copy()
+
+    # Normalise column names if older schema used different labels
+    if "feature" not in df.columns and "group_var" in df.columns:
+        df = df.rename(columns={"group_var": "feature"})
+    if "group" not in df.columns and "group_level" in df.columns:
+        df = df.rename(columns={"group_level": "group"})
+
+    # require core columns
+    if "mean_CATE_days" not in df.columns and "Mean_CATE_days" in df.columns:
+        df = df.rename(columns={"Mean_CATE_days": "mean_CATE_days"})
+
+    required = {"feature", "group", "mean_CATE_days"}
+    if not required.issubset(df.columns):
+        return pd.DataFrame()
+
+    if "mean_CATE_months" not in df.columns:
+        df["mean_CATE_months"] = df["mean_CATE_days"] / 30.0
+    if "n" not in df.columns:
+        df["n"] = np.nan
+
+    rows = []
+
+    for feat in sorted(df["feature"].unique()):
+        if feat not in patient:
+            continue
+
+        level = patient[feat]
+        df_feat = df[df["feature"] == feat].copy()
+        if df_feat.empty:
+            continue
+
+        # sort by benefit (descending) and rank
+        df_feat = df_feat.sort_values("mean_CATE_days", ascending=False).reset_index(drop=True)
+        df_feat["rank_within_feature"] = df_feat.index + 1
+        df_feat["n_levels"] = len(df_feat)
+
+        # match patient level (string compare for safety)
+        match = df_feat[df_feat["group"].astype(str) == str(level)]
+        if match.empty:
+            continue
+
+        m = match.iloc[0]
+        rows.append({
+            "feature": feat,
+            "patient_level": m["group"],
+            "n_in_level": int(m["n"]) if not pd.isna(m["n"]) else np.nan,
+            "mean_CATE_days": m["mean_CATE_days"],
+            "mean_CATE_months": m["mean_CATE_months"],
+            "rank_within_feature": int(m["rank_within_feature"]),
+            "n_levels": int(m["n_levels"])
+        })
+
+    if not rows:
+        return pd.DataFrame()
+
+    scorecard = pd.DataFrame(rows)
+    scorecard = scorecard.sort_values("mean_CATE_days", ascending=False).reset_index(drop=True)
+    return scorecard
+# ==============================================================================
+
+
 # ----------------- LAYOUT: TABS -----------------
 tab_patient, tab_timecourse, tab_insights = st.tabs(
     ["👤 Single patient", "⏱ Population time-course", "🧠 AI Insights"]
@@ -628,6 +709,83 @@ with tab_patient:
                 file_name="hnc_treatment_summary.txt",
                 mime="text/plain"
             )
+
+            # ---- SECTION D: Scorecard based on clinical subgroups ----
+            st.subheader("6. How does this patient compare to similar groups?")
+
+            # try a few possible filenames for your subgroup summary
+            subgroup_df = None
+            for candidate in [
+                "subgroup_summary_rmst36m_tuned.csv",
+                "subgroup_summary_rmst36m.csv",
+                "subgroup_summary_cates.csv"
+            ]:
+                subgroup_df = load_csv_with_fallback(candidate)
+                if subgroup_df is not None:
+                    break
+
+            if subgroup_df is None:
+                st.info(
+                    "Subgroup summary file not found "
+                    "(`subgroup_summary_rmst36m_tuned.csv`, `subgroup_summary_rmst36m.csv` "
+                    "or `subgroup_summary_cates.csv`). "
+                    "Export one of these from your notebook to enable the scorecard."
+                )
+            else:
+                scorecard_df = build_patient_scorecard_from_subgroups(patient, subgroup_df)
+
+                if scorecard_df.empty:
+                    st.info(
+                        "Could not match this patient's features to subgroup summaries. "
+                        "This may happen if the training notebook used different variable names "
+                        "or if some fields are not included in the app form."
+                    )
+                else:
+                    st.markdown("""
+This table shows, for each clinical feature, **which subgroup this patient belongs to**
+and what the **average treatment benefit (ΔRMST)** was for that subgroup in the training data.
+                    """)
+
+                    display_df = scorecard_df.assign(
+                        rank_text=lambda d: d["rank_within_feature"].astype(str)
+                        + " / " + d["n_levels"].astype(str)
+                    )[[
+                        "feature",
+                        "patient_level",
+                        "n_in_level",
+                        "mean_CATE_days",
+                        "mean_CATE_months",
+                        "rank_text"
+                    ]].rename(columns={
+                        "feature": "Feature",
+                        "patient_level": "Patient subgroup",
+                        "n_in_level": "N in subgroup",
+                        "mean_CATE_days": "Mean ΔRMST (days)",
+                        "mean_CATE_months": "Mean ΔRMST (months)",
+                        "rank_text": "Rank within feature\n(1 = highest benefit)"
+                    })
+
+                    st.dataframe(display_df, use_container_width=True)
+
+                    # brief narrative
+                    top_row = scorecard_df.iloc[0]
+                    bottom_row = scorecard_df.iloc[-1]
+
+                    st.markdown(f"""
+- **Highest-benefit signal**:  
+  For *{top_row['feature']}* = **{top_row['patient_level']}**, the average modelled gain from Chemo-RT  
+  was about **{top_row['mean_CATE_days']:.1f} days** (~{top_row['mean_CATE_months']:.2f} months),  
+  ranking **{top_row['rank_within_feature']}/{top_row['n_levels']}** within that feature.
+
+- **Lowest-benefit signal** (among the matched features):  
+  For *{bottom_row['feature']}* = **{bottom_row['patient_level']}**, the average gain was about  
+  **{bottom_row['mean_CATE_days']:.1f} days** (~{bottom_row['mean_CATE_months']:.2f} months),  
+  ranking **{bottom_row['rank_within_feature']}/{bottom_row['n_levels']}**.
+
+These are **group-level averages** from the training data – they complement the personalised
+survival curves and ΔRMST above by giving context such as *“patients like this in terms of HPV, stage, site…”*.
+                    """)
+
 
 # ---------- TAB 2: POPULATION TIME-COURSE ----------
 with tab_timecourse:
