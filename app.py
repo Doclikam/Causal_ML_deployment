@@ -250,10 +250,11 @@ with tab_patient:
 - Summarises the gain or loss in **event-free time** as **ΔRMST (restricted mean survival time)** over a horizon you choose.
         """)
 
-    # Simple baseline form 
-    with st.form("patient_form"):
-        c1, c2, c3 = st.columns(3)
-    
+    # patient form 
+with st.form("patient_form"):
+
+    c1, c2, c3 = st.columns(3)
+
     # ---- COLUMN 1: demographics ----
     with c1:
         age = st.number_input("Age (years)", value=62, min_value=18, max_value=99)
@@ -279,59 +280,43 @@ with tab_patient:
             ["HPV_Positive", "HPV_Negative", "HPV_Unknown", "Missing"],
             index=0
         )
-        # Overall clinical stage (if you captured it in your data as 'stage')
         stage = st.selectbox(
-            "Overall stage (AJCC-like)",
+            "Overall Stage (AJCC-like)",
             ["I", "II", "III", "IV", "Missing"],
-            index=2  # default III
+            index=2
         )
 
     st.markdown("### TNM classification")
 
     c4, c5, c6 = st.columns(3)
     with c4:
-        t_cat = st.selectbox(
-            "T category",
-            ["T1", "T2", "T3", "T4", "Tx"],
-            index=1
-        )
+        t_cat = st.selectbox("T category", ["T1", "T2", "T3", "T4", "Tx"], index=1)
     with c5:
-        n_cat = st.selectbox(
-            "N category",
-            ["N0", "N1", "N2", "N3", "Nx"],
-            index=0
-        )
+        n_cat = st.selectbox("N category", ["N0", "N1", "N2", "N3", "Nx"], index=0)
     with c6:
-        m_cat = st.selectbox(
-            "M category",
-            ["M0", "M1", "Mx"],
-            index=0
-        )
+        m_cat = st.selectbox("M category", ["M0", "M1", "Mx"], index=0)
 
     treatment = st.selectbox(
         "Planned treatment strategy",
         options=[0, 1],
-        format_func=lambda x: "0 – RT alone" if x == 0 else "1 – Chemo-RT",
+        format_func=lambda x: "RT alone" if x == 0 else "Chemo-RT",
         index=0
     )
 
-    submitted = st.form_submit_button("Compare RT vs Chemo-RT for this patient")
-    submitted = st.form_submit_button(
-        "Estimate personalised outcomes"
-    )
+    submitted = st.form_submit_button("Estimate personalised outcomes")
 
 
-    if submitted:
-        patient = {
+if submitted:
+    patient = {
         "age": age,
         "sex": sex,
         "primary_site_group": primary_site_group,
         "pathology_group": pathology_group,
         "hpv_clean": hpv_clean,
-        "stage": stage,   # overall stage
-        "t": t_cat,       # TNM T
-        "n": n_cat,       # TNM N
-        "m": m_cat,       # TNM M
+        "stage": stage,
+        "t": t_cat,
+        "n": n_cat,
+        "m": m_cat,
         "treatment": treatment
     }
 
