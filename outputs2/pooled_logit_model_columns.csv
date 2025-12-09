@@ -1,0 +1,51 @@
+model_columns
+period_bin_13-24
+period_bin_25-36
+period_bin_37-60
+period_bin_4-6
+period_bin_60+
+period_bin_7-12
+sex_Male
+smoking_status_clean_Ex-Smoker
+smoking_status_clean_Non-Smoker
+smoking_status_clean_Unknown
+primary_site_group_Nasopharynx
+primary_site_group_Oropharynx
+primary_site_group_Other_HNC
+subsite_clean_Glottis
+subsite_clean_Lat Wall
+subsite_clean_Post Wall
+subsite_clean_Soft Palate
+subsite_clean_Subglottis
+subsite_clean_Supraglottis
+subsite_clean_Tonsil
+subsite_clean_Tonsil Pillar
+subsite_clean_Tonsillar Fossa
+subsite_clean_Trans- Glottis
+subsite_clean_Uvula
+subsite_clean_Vallecula
+subsite_clean_nan
+stage_I
+stage_II
+stage_III
+stage_IV
+stage_IVA
+stage_IVB
+stage_IVC
+stage_Other
+stage_X
+stage_nan
+hpv_clean_HPV_Positive
+hpv_clean_HPV_Unknown
+hpv_clean_nan
+age
+ecog_ps
+smoking_py_clean
+time_since_rt_days
+treatment
+treat_x_period_bin_13-24
+treat_x_period_bin_25-36
+treat_x_period_bin_37-60
+treat_x_period_bin_4-6
+treat_x_period_bin_60+
+treat_x_period_bin_7-12
