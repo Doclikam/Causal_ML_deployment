@@ -372,13 +372,13 @@ with tab_patient:
 
     with st.expander("What this tool does", expanded=True):
         st.markdown("""
-- Uses a **pooled logistic survival model** to estimate the patient's probability of being alive and event-free over time under:
-  - **RT alone** (control)  
-  - **Chemo-RT** (treated)
-- Uses **causal forests** to estimate **horizon-specific risk differences (CATEs)** for this patient:
+-  Estimate the patient's probability of being alive and event-free over time under:
+  - **RT(Radiotherapy) alone** (control)  
+  - **Chemo-RT(Radiothrapy with chemotherapy)** (treated)
+-  Estimate **(time-specific risk differences (CATEs))** for this patient:
   - Negative CATE → **fewer events** with Chemo-RT (benefit)
   - Positive CATE → **more events** with Chemo-RT (potential harm)
-- Summarises the gain or loss in **event-free time** as **ΔRMST (restricted mean survival time)** over a horizon you choose.
+- Summarises the gain or loss in **Time alive without death from any cause(event-free time)** as **ΔRMST (restricted mean survival time)** over a horizon you choose.
         """)
 
     # patient form
