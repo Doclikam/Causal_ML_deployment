@@ -797,6 +797,8 @@ with tab_patient:
                             surv_plot[["period", "months", "date", "S_control", "S_treat"]].head(),
                             use_container_width=True
                         )
+surv = out.get("survival_curve")
+st.write("DEBUG — surv.head():", surv.head() if surv is not None else "surv is None")
 
 
             # ---------- PATIENT REPORT SUMMARY ----------
