@@ -31,15 +31,10 @@ st.markdown(
 This tool uses data-driven models to compare **radiotherapy alone (RT)** with  
 **concurrent chemoradiotherapy (Chemo-RT)** for an individual patient.
 
-It can estimate, depending on the setting you choose:
+It estimates:
 
-- **Overall survival (OS)** – chance of being **alive**, regardless of cancer status  
-- **Progression-free survival (PFS)** – chance of being **alive without the cancer worsening or spreading**  
-
-For either outcome, the tool shows:
-
-- The chance of being in that state over time  
-- The **extra time** a patient like this may gain with Chemo-RT, in **months**  
+- The chance of being **alive and well** (no death from any cause) over time  
+- The **extra time alive and well** that Chemo-RT may offer, in **months**  
 - How similar patients in the dataset have done  
 
 > ⚠️ These are **model-based estimates from retrospective data**.  
@@ -53,17 +48,7 @@ DEFAULT_OUTDIR = "outputs"
 INTERVAL_DAYS = 30
 
 # ----------------- SIDEBAR: SETTINGS -----------------
-st.sidebar.header("Time horizon & outcome")
-
-# Outcome type: OS vs PFS
-outcome_type = st.sidebar.radio(
-    "Outcome of interest",
-    options=["os", "pfs"],
-    format_func=lambda x: (
-        "Overall survival (alive)" if x == "os"
-        else "Progression-free survival (no progression or death)"
-    ),
-)
+st.sidebar.header("Time horizon")
 
 max_period_months = st.sidebar.number_input(
     "Max follow-up (months) for curves",
@@ -143,7 +128,7 @@ def load_joblib_with_fallback(filename: str):
 
 def compute_rmst_from_survival(surv_df: pd.DataFrame, horizon_months: int) -> dict:
     """
-    Compute average time in the desired state (OS or PFS) under RT vs Chemo-RT
+    Compute average time alive & event-free (RMST) under RT vs Chemo-RT
     up to a given horizon, using step-function approximation.
     """
     if surv_df is None or surv_df.empty:
@@ -177,13 +162,10 @@ def compute_rmst_from_survival(surv_df: pd.DataFrame, horizon_months: int) -> di
     }
 
 
-def interpret_delta_months(delta_m: float, outcome_type: str = "os") -> str:
+def interpret_delta_months(delta_m: float) -> str:
     """Clinician-friendly explanation of ΔRMST magnitude and direction."""
     if np.isnan(delta_m):
-        if outcome_type == "pfs":
-            return "The model could not compute a reliable difference in progression-free time between RT and Chemo-RT for this patient."
-        else:
-            return "The model could not compute a reliable difference in survival between RT and Chemo-RT for this patient."
+        return "The model could not compute a reliable difference between RT and Chemo-RT for this patient."
 
     mag = abs(delta_m)
     if mag < 0.5:
@@ -195,37 +177,22 @@ def interpret_delta_months(delta_m: float, outcome_type: str = "os") -> str:
     else:
         size = "large"
 
-    if outcome_type == "pfs":
-        outcome_phrase = "months without the cancer worsening or spreading"
-    else:
-        outcome_phrase = "months alive"
-
     if delta_m > 0:
-        return (
-            f"Chemo-RT is estimated to give a **{size} gain** of about "
-            f"**{delta_m:.1f} extra {outcome_phrase}** by the chosen time point."
-        )
+        return (f"Chemo-RT is estimated to give a **{size} gain** of about "
+                f"**{delta_m:.1f} extra months alive and well** by the chosen time point.")
     elif delta_m < 0:
-        return (
-            f"Chemo-RT is estimated to be **worse overall**, with about "
-            f"**{mag:.1f} fewer {outcome_phrase}** by the chosen time point."
-        )
+        return (f"Chemo-RT is estimated to be **worse overall**, with about "
+                f"**{mag:.1f} fewer months alive and well** by the chosen time point.")
     else:
-        if outcome_type == "pfs":
-            return "The model predicts essentially no difference in time without progression between RT and Chemo-RT."
-        else:
-            return "The model predicts essentially no difference in time alive between RT and Chemo-RT."
+        return "The model predicts essentially no difference in time alive and well between RT and Chemo-RT."
 
 
-def describe_cate_table(cates: dict, outcome_type: str = "os") -> str:
+def describe_cate_table(cates: dict) -> str:
     """Short narrative from per-horizon absolute risk differences (Chemo-RT − RT)."""
     vals = [(h, v["CATE"]) for h, v in cates.items()
             if v.get("CATE") is not None and not np.isnan(v.get("CATE"))]
     if not vals:
-        if outcome_type == "pfs":
-            return "The model could not provide reliable time-specific differences in progression risk for this patient."
-        else:
-            return "The model could not provide reliable time-specific risk differences for this patient."
+        return "The model could not provide reliable horizon-specific risk differences for this patient."
 
     parsed = []
     for h, v in vals:
@@ -246,22 +213,17 @@ def describe_cate_table(cates: dict, outcome_type: str = "os") -> str:
     worst_h = mh_arr[idx_harm]
     worst_v = arr[idx_harm]
 
-    if outcome_type == "pfs":
-        event_word = "cancer progression or death"
-    else:
-        event_word = "death or serious event"
-
     text = []
     if best_v < 0:
         text.append(
             f"- **Largest estimated benefit**: around **{best_h:.0f} months**, "
-            f"Chemo-RT is predicted to **reduce the risk of {event_word} by about "
+            f"Chemo-RT is predicted to **reduce the event risk by about "
             f"{abs(best_v)*100:.1f} percentage points**."
         )
     if worst_v > 0:
         text.append(
             f"- **Largest estimated potential harm**: around **{worst_h:.0f} months**, "
-            f"Chemo-RT is predicted to **increase the risk of {event_word} by about "
+            f"Chemo-RT is predicted to **increase the event risk by about "
             f"{worst_v*100:.1f} percentage points**."
         )
 
@@ -279,13 +241,7 @@ def describe_cate_table(cates: dict, outcome_type: str = "os") -> str:
     return "\n".join(text)
 
 
-def generate_patient_summary(
-    patient,
-    rmst_res,
-    surv_df,
-    horizon_months: int,
-    outcome_type: str = "os"
-) -> str:
+def generate_patient_summary(patient, rmst_res, surv_df, horizon_months: int) -> str:
     """
     Short, patient-friendly paragraph (2–3 sentences).
     """
@@ -301,13 +257,6 @@ def generate_patient_summary(
         if not s_h.empty:
             p_rt = s_h["S_control"].iloc[-1]
             p_chemo = s_h["S_treat"].iloc[-1]
-
-    if outcome_type == "pfs":
-        outcome_phrase = "alive without the cancer worsening or spreading (progression-free)"
-        diff_phrase = "time without the cancer worsening"
-    else:
-        outcome_phrase = "alive"
-        diff_phrase = "time alive"
 
     if np.isnan(delta_m):
         main = (
@@ -325,13 +274,13 @@ def generate_patient_summary(
         main = (
             f"For a patient like this, over about {horizon_months} months the model suggests "
             f"{phrasing} with chemoradiotherapy compared with radiotherapy alone, "
-            f"equivalent to about {delta_m:+.1f} months difference in {diff_phrase}."
+            f"equivalent to about {delta_m:+.1f} months difference in time alive and well."
         )
 
     surv_sentence = ""
     if not np.isnan(p_rt) and not np.isnan(p_chemo):
         surv_sentence = (
-            f" By {horizon_months} months, the estimated chance of being {outcome_phrase} is "
+            f" By {horizon_months} months, the estimated chance of being alive and well is "
             f"around {p_rt*100:.0f}% with radiotherapy alone and {p_chemo*100:.0f}% with chemoradiotherapy."
         )
 
@@ -343,24 +292,10 @@ def generate_patient_summary(
     return main + surv_sentence + disclaimer
 
 
-def build_print_summary(
-    patient,
-    rmst_res,
-    surv_df,
-    horizon_months,
-    cates,
-    outcome_type: str = "os"
-) -> str:
+def build_print_summary(patient, rmst_res, surv_df, horizon_months, cates) -> str:
     """Text summary for download / notes."""
     lines = []
-    if outcome_type == "pfs":
-        title = "Head & Neck Cancer: RT vs Chemo-RT – Progression-Free Survival"
-        state_phrase = "progression-free (alive without the cancer worsening or spreading)"
-    else:
-        title = "Head & Neck Cancer: RT vs Chemo-RT – Overall Survival"
-        state_phrase = "alive"
-
-    lines.append(title)
+    lines.append("Head & Neck Cancer: RT vs Chemo-RT Summary")
     lines.append("=" * 60)
     lines.append("")
 
@@ -373,7 +308,7 @@ def build_print_summary(
     rmst_c = rmst_res.get("rmst_control", np.nan)
     delta_m = rmst_res.get("delta", np.nan)
 
-    lines.append(f"Average time {state_phrase} up to {horizon_months} months:")
+    lines.append(f"Average time alive & well (up to {horizon_months} months):")
     lines.append(f"  - RT alone:    {rmst_c:.1f} months" if not np.isnan(rmst_c) else "  - RT alone:    N/A")
     lines.append(f"  - Chemo-RT:    {rmst_t:.1f} months" if not np.isnan(rmst_t) else "  - Chemo-RT:    N/A")
     lines.append(f"  - Difference (Chemo-RT − RT): {delta_m:+.1f} months" if not np.isnan(delta_m) else "  - Difference:  N/A")
@@ -389,16 +324,13 @@ def build_print_summary(
             p_chemo = s_h["S_treat"].iloc[-1]
 
     if not np.isnan(p_rt) and not np.isnan(p_chemo):
-        lines.append(f"Estimated probability of being {state_phrase} at {horizon_months} months:")
+        lines.append(f"Estimated probability of being alive & well at {horizon_months} months:")
         lines.append(f"  - RT alone:    {p_rt*100:.0f}%")
         lines.append(f"  - Chemo-RT:    {p_chemo*100:.0f}%")
         lines.append("")
 
     if cates:
-        if outcome_type == "pfs":
-            lines.append("Change in risk of progression or death at each time point (Chemo-RT − RT):")
-        else:
-            lines.append("Change in event risk at each time point (Chemo-RT − RT):")
+        lines.append("Change in event risk at each time point (Chemo-RT − RT):")
         for h, v in sorted(cates.items(), key=lambda kv: float(kv[0])):
             cate = v.get("CATE")
             if cate is None or np.isnan(cate):
@@ -408,7 +340,7 @@ def build_print_summary(
 
     lines.append("Patient report summary:")
     lines.append("")
-    lines.append(generate_patient_summary(patient, rmst_res, surv_df, horizon_months, outcome_type=outcome_type))
+    lines.append(generate_patient_summary(patient, rmst_res, surv_df, horizon_months))
     lines.append("")
 
     lines.append("Notes:")
@@ -564,12 +496,7 @@ def build_patient_scorecard_from_subgroups(
     return scorecard
 
 
-def categorize_benefit(
-    delta_m: float,
-    p_rt: float,
-    p_chemo: float,
-    outcome_type: str = "os"
-) -> str:
+def categorize_benefit(delta_m: float, p_rt: float, p_chemo: float) -> str:
     """
     Simple label summarising benefit level for clinicians.
     """
@@ -579,18 +506,11 @@ def categorize_benefit(
     diff_surv = (p_chemo - p_rt) * 100.0
     mag = abs(delta_m)
 
-    # If clearly worse
     if delta_m <= -0.5:
-        if outcome_type == "pfs":
-            return "Chemo-RT not favoured (shorter time without progression)"
-        else:
-            return "Chemo-RT not favoured (possible net harm)"
+        return "Chemo-RT not favoured (possible net harm)"
 
     if mag < 0.5 and abs(diff_surv) < 3:
-        if outcome_type == "pfs":
-            return "Either option acceptable (minimal difference in progression-free time)"
-        else:
-            return "Either option acceptable (minimal survival difference)"
+        return "Either option acceptable (minimal difference)"
 
     if delta_m > 0 and mag < 2:
         return "Chemo-RT: small benefit"
@@ -613,21 +533,12 @@ tab_patient, tab_timecourse, tab_insights = st.tabs(
 with tab_patient:
     st.subheader("1. Enter patient details")
 
-    if outcome_type == "pfs":
-        outcome_explainer = """
-- An estimate of **how much extra time** a patient like this may spend **without the cancer worsening or spreading (progression-free)**  
-- The **extra progression-free time** (in months) and **difference in progression-free probability** at a chosen time  
-- Optional detailed plots and subgroup summaries for deeper exploration
-        """
-    else:
-        outcome_explainer = """
-- An estimate of **how much survival benefit** a patient like this may gain from **Chemo-RT vs RT alone**  
-- The **extra time alive** (in months) and **difference in survival probability** at a chosen time  
-- Optional detailed plots and subgroup summaries for deeper exploration
-        """
-
     with st.expander("What this page provides", expanded=True):
-        st.markdown(outcome_explainer)
+        st.markdown("""
+- An estimate of **how much benefit** a patient like this may gain from **Chemo-RT vs RT alone**  
+- The **extra time alive and well** (in months) and **difference in survival probability** at a chosen time  
+- Optional detailed plots and subgroup summaries for deeper exploration
+        """)
 
     # patient form
     with st.form("patient_form"):
@@ -725,14 +636,13 @@ with tab_patient:
                 patient_data=patient,
                 outdir=OUTDIR,
                 base_url=BASE_URL,
-                max_period_override=int(max_period_months),
-                outcome_type=outcome_type
+                max_period_override=int(max_period_months)
             )
 
             raw_errors = out.get("errors", {})
             filtered_errors = {
-                k: v for k, v in raw_errors.items()
-                if k not in ["scaler"]  # hide non-clinical warnings
+                k: v for k, msg in raw_errors.items()
+                if k not in ["scaler"]
             }
             if filtered_errors:
                 with st.expander("Technical notes from modelling pipeline", expanded=False):
@@ -750,10 +660,7 @@ with tab_patient:
             label = "Estimate uncertain"
 
             if surv is None or surv.empty:
-                if outcome_type == "pfs":
-                    st.warning("Progression-free survival curve could not be computed for this patient.")
-                else:
-                    st.warning("Survival curve could not be computed for this patient.")
+                st.warning("Survival curve could not be computed for this patient.")
             else:
                 rmst_res = compute_rmst_from_survival(surv, rmst_horizon_months)
                 rmst_t = rmst_res["rmst_treat"]
@@ -768,118 +675,129 @@ with tab_patient:
                     p_rt = s_h["S_control"].iloc[-1]
                     p_chemo = s_h["S_treat"].iloc[-1]
 
-                label = categorize_benefit(delta_m, p_rt, p_chemo, outcome_type=outcome_type)
+                label = categorize_benefit(delta_m, p_rt, p_chemo)
 
                 # Summary metrics card (shorter labels to avoid ellipses)
-                if outcome_type == "pfs":
-                    rt_label = "RT alone\n(PFS months)"
-                    chemo_label = "Chemo-RT\n(PFS months)"
-                    extra_label = "Extra PFS time\nChemo-RT − RT"
-                    diff_label = f"Diff in chance\nPFS at {rmst_horizon_months}m"
-                else:
-                    rt_label = "RT alone\n(OS months)"
-                    chemo_label = "Chemo-RT\n(OS months)"
-                    extra_label = "Extra OS time\nChemo-RT − RT"
-                    diff_label = f"Diff in chance\nalive at {rmst_horizon_months}m"
-
                 c_sum1, c_sum2, c_sum3, c_sum4 = st.columns(4)
                 c_sum1.metric(
-                    rt_label,
+                    "RT alone\n(avg months)",
                     f"{rmst_c:.1f}" if not np.isnan(rmst_c) else "N/A"
                 )
                 c_sum2.metric(
-                    chemo_label,
+                    "Chemo-RT\n(avg months)",
                     f"{rmst_t:.1f}" if not np.isnan(rmst_t) else "N/A"
                 )
                 c_sum3.metric(
-                    extra_label,
+                    "Extra time\nChemo-RT − RT",
                     f"{delta_m:+.1f}" if not np.isnan(delta_m) else "N/A"
                 )
                 if not np.isnan(p_rt) and not np.isnan(p_chemo):
                     diff_surv = (p_chemo - p_rt) * 100.0
                     c_sum4.metric(
-                        diff_label,
+                        f"Diff in chance\nalive & well at {rmst_horizon_months}m",
                         f"{diff_surv:+.1f} %"
                     )
                 else:
                     c_sum4.metric(
-                        diff_label,
+                        f"Diff in chance\nalive & well at {rmst_horizon_months}m",
                         "N/A"
                     )
 
+                # Bold markdown (no HTML wrapper so ** works)
                 st.markdown(f"**Model interpretation:** {label}")
-                st.markdown(interpret_delta_months(delta_m, outcome_type=outcome_type))
+                st.markdown(interpret_delta_months(delta_m))
 
             st.markdown("---")
 
             # ---------- SURVIVAL CURVES ----------
+                        # ---------- SURVIVAL CURVES ----------
             if surv is not None and not surv.empty:
                 surv_plot = surv.copy()
-                surv_plot["months"] = surv_plot["days"] / 30.0
-                # calendar dates based on RT start date
-                surv_plot["date"] = pd.to_datetime(start_date) + pd.to_timedelta(surv_plot["days"], unit="D")
 
-                if outcome_type == "pfs":
-                    y_title = "Probability progression-free"
-                else:
-                    y_title = "Probability alive"
+                # Make sure we have a 'days' column
+                if "days" not in surv_plot.columns:
+                    # fall back to period * interval length
+                    if "period" in surv_plot.columns:
+                        surv_plot["days"] = surv_plot["period"].astype(float) * INTERVAL_DAYS
+                    else:
+                        st.error("Survival data has no 'days' or 'period' column; cannot plot time axis.")
+                        surv_plot = None
 
-                st.subheader("3. Curve over time (RT vs Chemo-RT)")
+                if surv_plot is not None:
+                    # ensure numeric
+                    surv_plot["days"] = pd.to_numeric(surv_plot["days"], errors="coerce")
+                    surv_plot = surv_plot.dropna(subset=["days"])
 
-                # Plot with months on x-axis
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=surv_plot["months"], y=surv_plot["S_control"],
-                    mode="lines+markers",
-                    name="RT alone",
-                    line=dict(color=COLOR_RT),
-                    marker=dict(color=COLOR_RT)
-                ))
-                fig.add_trace(go.Scatter(
-                    x=surv_plot["months"], y=surv_plot["S_treat"],
-                    mode="lines+markers",
-                    name="Chemo-RT",
-                    line=dict(color=COLOR_CHEMO),
-                    marker=dict(color=COLOR_CHEMO)
-                ))
-                fig.update_layout(
-                    xaxis_title="Time since RT start (months)",
-                    yaxis_title=y_title,
-                    yaxis=dict(range=[0, 1]),
-                    legend_title="Strategy"
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                    # months since RT start
+                    surv_plot["months"] = surv_plot["days"] / 30.0
 
-                # Optional toggle for calendar-date display
-                if st.checkbox("Show calendar dates on the time axis", value=False):
-                    fig_date = go.Figure()
-                    fig_date.add_trace(go.Scatter(
-                        x=surv_plot["date"], y=surv_plot["S_control"],
+                    # calendar dates since RT start
+                    # start_date comes from st.date_input, which is a datetime.date
+                    surv_plot["date"] = pd.to_datetime(start_date) + pd.to_timedelta(
+                        surv_plot["days"].astype(float), unit="D"
+                    )
+
+                    st.subheader("3. Survival over time (RT vs Chemo-RT)")
+
+                    # Plot with months on x-axis (default)
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=surv_plot["months"], y=surv_plot["S_control"],
                         mode="lines+markers",
                         name="RT alone",
                         line=dict(color=COLOR_RT),
                         marker=dict(color=COLOR_RT)
                     ))
-                    fig_date.add_trace(go.Scatter(
-                        x=surv_plot["date"], y=surv_plot["S_treat"],
+                    fig.add_trace(go.Scatter(
+                        x=surv_plot["months"], y=surv_plot["S_treat"],
                         mode="lines+markers",
                         name="Chemo-RT",
                         line=dict(color=COLOR_CHEMO),
                         marker=dict(color=COLOR_CHEMO)
                     ))
-                    fig_date.update_layout(
-                        xaxis_title="Calendar date",
-                        yaxis_title=y_title,
+                    fig.update_layout(
+                        xaxis_title="Time since RT start (months)",
+                        yaxis_title="Probability alive & well",
                         yaxis=dict(range=[0, 1]),
                         legend_title="Strategy"
                     )
-                    st.plotly_chart(fig_date, use_container_width=True)
+                    st.plotly_chart(fig, use_container_width=True)
 
-                with st.expander("Table of modelled curve over time (first few rows)"):
-                    st.dataframe(
-                        surv_plot[["period", "months", "date", "S_control", "S_treat"]].head(),
-                        use_container_width=True
+                    # Optional calendar-date view
+                    show_dates = st.checkbox(
+                        "Show calendar dates on the time axis",
+                        value=False
                     )
+                    if show_dates:
+                        fig_date = go.Figure()
+                        fig_date.add_trace(go.Scatter(
+                            x=surv_plot["date"], y=surv_plot["S_control"],
+                            mode="lines+markers",
+                            name="RT alone",
+                            line=dict(color=COLOR_RT),
+                            marker=dict(color=COLOR_RT)
+                        ))
+                        fig_date.add_trace(go.Scatter(
+                            x=surv_plot["date"], y=surv_plot["S_treat"],
+                            mode="lines+markers",
+                            name="Chemo-RT",
+                            line=dict(color=COLOR_CHEMO),
+                            marker=dict(color=COLOR_CHEMO)
+                        ))
+                        fig_date.update_layout(
+                            xaxis_title="Calendar date",
+                            yaxis_title="Probability alive & well",
+                            yaxis=dict(range=[0, 1]),
+                            legend_title="Strategy"
+                        )
+                        st.plotly_chart(fig_date, use_container_width=True)
+
+                    with st.expander("Table of modelled survival over time (first few rows)"):
+                        st.dataframe(
+                            surv_plot[["period", "months", "date", "S_control", "S_treat"]].head(),
+                            use_container_width=True
+                        )
+
 
             # ---------- PATIENT REPORT SUMMARY ----------
             st.subheader("4. Patient report summary")
@@ -888,8 +806,7 @@ with tab_patient:
                 patient=patient,
                 rmst_res=rmst_res,
                 surv_df=surv,
-                horizon_months=rmst_horizon_months,
-                outcome_type=outcome_type
+                horizon_months=rmst_horizon_months
             )
             st.markdown(
                 f"""
@@ -912,8 +829,7 @@ with tab_patient:
                 rmst_res=rmst_res,
                 surv_df=surv,
                 horizon_months=rmst_horizon_months,
-                cates=cates,
-                outcome_type=outcome_type
+                cates=cates
             )
 
             st.download_button(
@@ -927,14 +843,11 @@ with tab_patient:
             show_advanced = st.checkbox("Show advanced model details (risk differences & subgroup patterns)", value=False)
 
             if show_advanced:
-                # CATEs – OS only (PFS currently has no horizon-specific CATEs)
-                st.subheader("5. Change in chance at different times")
+                # CATEs
+                st.subheader("5. Change in chance of being alive & well at different times")
 
                 if not cates:
-                    if outcome_type == "pfs":
-                        st.info("No time-specific progression risk differences available for this patient.")
-                    else:
-                        st.info("No time-specific risk differences available for this patient.")
+                    st.info("No time-specific risk differences available for this patient.")
                 else:
                     rows = []
                     for h, v in cates.items():
@@ -971,28 +884,20 @@ with tab_patient:
                             textposition="outside"
                         ))
                         fig_c.add_hline(y=0, line_dash="dash", line_color="gray")
-
-                        if outcome_type == "pfs":
-                            ylab = "Chemo-RT − RT (percentage-point change in PFS)"
-                            title = "Change in chance of being progression-free"
-                        else:
-                            ylab = "Chemo-RT − RT (percentage-point change in survival)"
-                            title = "Change in chance of being alive"
-
                         fig_c.update_layout(
                             xaxis_title="Time point (months)",
-                            yaxis_title=ylab,
-                            title=title
+                            yaxis_title="Chemo-RT − RT (percentage-point change)",
+                            title="Change in chance of being alive & well"
                         )
                         st.plotly_chart(fig_c, use_container_width=True)
 
-                        st.markdown(describe_cate_table(cates, outcome_type=outcome_type))
+                        st.markdown(describe_cate_table(cates))
 
                     if not errors_cate.empty:
                         with st.expander("Technical issues at some time points"):
                             st.table(errors_cate[["horizon_label", "error"]])
 
-                # Subgroup scorecard – same file (OS-based) but still useful context
+                # Subgroup scorecard
                 st.subheader("6. How this patient compares with similar groups")
 
                 subgroup_df = load_csv_with_fallback("subgroup_summary_cates.csv")
@@ -1069,11 +974,11 @@ with tab_timecourse:
     st.subheader("How treatment effect changes over time (population-level)")
 
     st.markdown("""
-This page shows **overall patterns** from the study population for **overall survival**:
+This page shows **overall patterns** from the study population:
 
 - How often events occurred over time under **RT vs Chemo-RT**
 - How the **relative effect** (hazard ratio) changed over time
-- Which time windows contributed most to the overall **extra time alive**
+- Which time windows contributed most to the overall **extra time alive & well**
 
 These summaries are **not patient-specific**, but can help frame when treatment intensity
 seems most influential in the underlying data.
@@ -1108,7 +1013,7 @@ seems most influential in the underlying data.
             fig_h.update_layout(
                 xaxis_title="Time (months)",
                 yaxis_title="Event probability per interval",
-                title="Event rates over time (overall survival)"
+                title="Event rates over time"
             )
             st.plotly_chart(fig_h, use_container_width=True)
 
@@ -1133,11 +1038,11 @@ seems most influential in the underlying data.
                 fig_hr.update_layout(
                     xaxis_title="Time (months)",
                     yaxis_title="Chemo-RT / RT",
-                    title="Relative effect (hazard ratio) over time (OS)"
+                    title="Relative effect (hazard ratio) over time"
                 )
                 st.plotly_chart(fig_hr, use_container_width=True)
 
-        st.subheader("Where the extra survival time comes from")
+        st.subheader("Where the extra time alive & well comes from")
 
         fig_dr = go.Figure()
         fig_dr.add_trace(go.Bar(
@@ -1150,7 +1055,7 @@ seems most influential in the underlying data.
         fig_dr.update_layout(
             xaxis_title="Time (months)",
             yaxis_title="Contribution to extra time (months)",
-            title="Time windows contributing to overall survival benefit"
+            title="Time windows contributing to overall benefit"
         )
         st.plotly_chart(fig_dr, use_container_width=True)
 
@@ -1163,9 +1068,9 @@ seems most influential in the underlying data.
                 st.markdown(f"""
 **Interpretation (population-level):**
 
-- The **strongest relative survival benefit** of Chemo-RT (lowest hazard ratio) appears around  
+- The **strongest relative benefit** of Chemo-RT (lowest hazard ratio) appears around  
   **{peak_m:.0f} months** after starting treatment, with HR ≈ **{peak_hr:.2f}**.
-- Before this time, Chemo-RT is generally associated with **fewer deaths/events** than RT alone;  
+- Before this time, Chemo-RT is generally associated with **fewer events** than RT alone;  
   later, the difference narrows.
                 """)
 
@@ -1183,7 +1088,7 @@ with tab_insights:
 
     st.markdown("""
 This section gives a **quick look** at how different clinical subgroups
-tended to respond in the dataset used to train the models (overall survival).
+tended to respond in the dataset used to train the models.
 
 It is not personalised, but can help sense-check whether your patient sits in a group
 that typically showed **stronger** or **weaker** benefit from Chemo-RT.
