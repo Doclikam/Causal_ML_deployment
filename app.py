@@ -19,12 +19,12 @@ COLOR_BENEFIT = "#1f77b4"   # blue for benefit
 COLOR_HARM = "#d62728"      # red for harm
 
 st.set_page_config(
-    page_title="ONCO-AID **Your Personalized Cancer Treatment Decision Assistant**",
+    page_title="Head & Neck Cancer – Chemo-RT Decision Aid",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("Head & Neck Cancer – Chemo-RT Decision Aid")
+st.title("ONCO-AID **Your Personalized Cancer Treatment Decision Assistant**")
 
 st.markdown(
     """
