@@ -11,7 +11,7 @@ from utils.infer import infer_new_patient_fixed
 
 # ----------------- CONFIG -----------------
 DEFAULT_OUTDIR = "outputs"
-DEFAULT_BASE_URL = ""  # if you want remote fallback (raw github path)
+DEFAULT_BASE_URL = ""  
 INTERVAL_DAYS = 30
 DEFAULT_MAX_MONTHS = 60
 
