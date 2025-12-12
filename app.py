@@ -12,6 +12,147 @@ import streamlit as st
 
 from utils.infer import infer_new_patient_fixed
 
+
+#  DIAGNOSTICS-----> why identical predictions? 
+# Run inference with debug so infer returns debug info (set return_raw=True)
+out_dbg = infer_new_patient_fixed(
+    patient_data=patient,
+    outdir=OUTDIR,
+    base_url=BASE_URL,
+    max_period_override=int(max_period_months),
+    return_raw=True
+)
+
+# prefer the debug-out if available
+if out_dbg.get("debug"):
+    st.write("**Artifact sources (from infer debug)**:")
+    st.json(out_dbg["debug"].get("artifact_sources", {}))
+else:
+    st.write("No debug block returned from infer (return_raw may have been False).")
+
+# Show top-level errors
+errs = out_dbg.get("errors", {})
+if errs:
+    st.warning("Model pipeline errors (summary):")
+    st.json(errs)
+
+# Try to load patient_columns and forests bundle directly (same files infer tries)
+def _try_local_or_remote(fn):
+    local_path = os.path.join(OUTDIR, fn)
+    if os.path.exists(local_path):
+        try:
+            return joblib.load(local_path), f"local:{local_path}"
+        except Exception:
+            try:
+                return pd.read_csv(local_path), f"local_csv:{local_path}"
+            except Exception as e:
+                return None, f"failed_local:{local_path}:{e}"
+    if BASE_URL:
+        url = BASE_URL.rstrip("/") + "/" + fn
+        try:
+            r = requests.get(url, timeout=30); r.raise_for_status()
+            # try joblib load
+            try:
+                return joblib.load(BytesIO(r.content)), f"remote_joblib:{url}"
+            except Exception:
+                try:
+                    return pd.read_csv(io.StringIO(r.text)), f"remote_csv:{url}"
+                except Exception:
+                    return None, f"remote_failed_read:{url}"
+        except Exception as e:
+            return None, f"remote_failed:{url}:{e}"
+    return None, None
+
+patient_cols_art, pc_src = _try_local_or_remote("causal_patient_columns.joblib")
+st.write("patient_columns source:", pc_src)
+st.write("patient_columns (preview):")
+st.write(patient_cols_art if patient_cols_art is None else (patient_cols_art if isinstance(patient_cols_art, (list, dict, pd.Series, np.ndarray)) else str(type(patient_cols_art))))
+
+forests_bundle, fb_src = _try_local_or_remote("causal_forests_period_horizons_patient_level.joblib")
+st.write("forests bundle source:", fb_src)
+
+# Rebuild Xpatient the same way infer does---> inspect it
+def build_Xpatient_local(patient_dict, patient_columns_obj):
+    if patient_columns_obj is None:
+        return None
+    # normalize representation
+    if isinstance(patient_columns_obj, (pd.Series, list, np.ndarray)):
+        pcols = list(patient_columns_obj)
+    elif isinstance(patient_columns_obj, dict):
+        if 'columns' in patient_columns_obj:
+            pcols = list(patient_columns_obj['columns'])
+        else:
+            pcols = list(patient_columns_obj.keys())
+    elif isinstance(patient_columns_obj, pd.DataFrame):
+        pcols = patient_columns_obj.iloc[:,0].astype(str).tolist()
+    else:
+        pcols = list(patient_columns_obj)
+    Xp = pd.DataFrame(np.zeros((1, len(pcols))), columns=pcols)
+    for c in pcols:
+        if c in patient_dict:
+            Xp.at[0, c] = patient_dict[c]
+        else:
+            if '_' in c:
+                root, tail = c.split('_', 1)
+                if root in patient_dict and str(patient_dict[root]) == tail:
+                    Xp.at[0, c] = 1.0
+    return Xp
+
+Xpatient_local = build_Xpatient_local(patient, patient_cols_art)
+st.write("Reconstructed Xpatient (first 100 cols if many):")
+if Xpatient_local is None:
+    st.write("Could not build Xpatient - patient_columns missing.")
+else:
+    # show first N columns, and indicate if all-zero
+    Nshow = min(100, Xpatient_local.shape[1])
+    st.dataframe(Xpatient_local.iloc[:, :Nshow].T.rename(columns={0: "value"}))
+    st.write("Summary: min / max / mean across features:", Xpatient_local.values.min(), Xpatient_local.values.max(), Xpatient_local.values.mean())
+    if np.allclose(Xpatient_local.values, 0.0):
+        st.error("Xpatient is all zeros → model will output identical predictions for every patient. This is the main cause.")
+
+# Inspect forests_bundle estimators and their feature expectations
+if isinstance(forests_bundle, dict):
+    st.write("Forests bundle keys (horizons):", list(forests_bundle.keys())[:20])
+    # inspect one estimator (first)
+    first_key = list(forests_bundle.keys())[0] if len(forests_bundle)>0 else None
+    if first_key:
+        est = forests_bundle[first_key]
+        st.write("Representative estimator type:", type(est))
+        # if dict of nested estimators, pick a candidate with .effect
+        candidate = est
+        if isinstance(est, dict):
+            for v in est.values():
+                if hasattr(v, "effect"):
+                    candidate = v
+                    break
+        # feature names
+        if hasattr(candidate, "feature_names_in_"):
+            st.write("Estimator.feature_names_in_ (len):", len(candidate.feature_names_in_))
+            fnames = list(candidate.feature_names_in_)[:80]
+            st.write("sample feature names:", fnames)
+            # Reindex our reconstructed X to this feature set
+            if Xpatient_local is not None:
+                Xfor = Xpatient_local.reindex(columns=list(candidate.feature_names_in_), fill_value=0.0)
+                st.write("X for model (sum per column preview):")
+                st.dataframe(pd.DataFrame({"col": Xfor.columns[:80], "value": Xfor.iloc[0, :80].values}).T)
+                # run candidate.effect if possible (wrap in try)
+                try:
+                    eff = np.asarray(candidate.effect(Xfor.values)).flatten()
+                    st.write("Raw effect predicted by candidate for this patient:", eff)
+                except Exception as e:
+                    st.write("candidate.effect failed:", str(e))
+        else:
+            # try to call effect with Xpatient_local directly (best-effort)
+            try:
+                if Xpatient_local is not None:
+                    eff = np.asarray(candidate.effect(Xpatient_local.values)).flatten()
+                    st.write("Candidate.effect(Xpatient.values) ->", eff)
+            except Exception as e:
+                st.write("Candidate has no feature_names_in_ and effect call failed:", str(e))
+else:
+    st.write("Forests bundle not a dict or not loaded:", type(forests_bundle))
+
+
 # ----------------- STYLE & CONFIG -----------------
 COLOR_RT = "#1f77b4"        # calm blue
 COLOR_CHEMO = "#2ca02c"     # medical green
