@@ -1,3 +1,4 @@
+# utils/infer.py
 import os
 import joblib
 import pandas as pd
@@ -12,7 +13,6 @@ DEFAULT_PERIOD_LABELS = ['0-3','4-6','7-12','13-24','25-60','60+']
 
 # -------------------- artifact loading helpers --------------------
 def _load_local_art(path):
-    """Try to load joblib first, then CSV as fallback."""
     if not os.path.exists(path):
         return None, None
     try:
@@ -26,7 +26,6 @@ def _load_local_art(path):
             return None, f"failed_local:{path}:{e}"
 
 def _load_remote_joblib(url):
-    """Download a remote joblib/pickle via requests and load it."""
     try:
         r = requests.get(url, timeout=30)
         r.raise_for_status()
@@ -35,13 +34,6 @@ def _load_remote_joblib(url):
         return None, f"remote_failed:{url}:{e}"
 
 def _try_load_artifact(name, candidates, outdir=DEFAULT_OUTDIR, base_url: Optional[str]=None):
-    """
-    Try (in order):
-      - globals()[name] if present
-      - local files in outdir using candidates
-      - remote base_url + candidate (if base_url provided)
-    Returns (value or None, source_str or None)
-    """
     # 1) globals
     if name in globals() and globals()[name] is not None:
         return globals()[name], f"globals:{name}"
@@ -53,16 +45,14 @@ def _try_load_artifact(name, candidates, outdir=DEFAULT_OUTDIR, base_url: Option
         if val is not None:
             return val, src
 
-    # 3) remote (raw url)
+    # 3) remote via base_url
     if base_url:
         base = base_url.rstrip("/") + "/"
         for fn in candidates:
             url = base + fn
-            # try joblib/raw binary
             val, src = _load_remote_joblib(url)
             if val is not None:
                 return val, src
-            # try csv text
             try:
                 r = requests.get(url, timeout=30)
                 r.raise_for_status()
@@ -85,17 +75,8 @@ def _build_X_pp_for_model(df_pp_new,
                           period_labels=None):
     """
     Build person-period features to match model_columns exactly.
-    - df_pp_new: person-period rows for the patient (must include 'period' and 'treatment' ideally)
-    - model_columns: list-like of required columns (order preserved)
-    - scaler: scaler for numeric columns (optional)
-    - train_medians: dict/Series of medians to fill numeric missing (optional)
-    - collapse_maps: dict mapping categorical col -> allowed values (optional)
-    - cat_cols: list of categorical roots to consider (optional)
-    - num_cols: list of numeric columns to include (optional)
-    - period_bins/period_labels: if period_bin needs constructing
-    Returns DataFrame with columns == model_columns.
     """
-    # canonicalize model_columns into list of strings
+    # canonicalize model_columns into list
     if isinstance(model_columns, (pd.Series, np.ndarray)):
         cols_req = [str(x).strip() for x in list(model_columns)]
     elif isinstance(model_columns, pd.DataFrame):
@@ -105,21 +86,20 @@ def _build_X_pp_for_model(df_pp_new,
 
     X_pp = pd.DataFrame(index=df_pp_new.index)
 
-    # 1) ensure period_bin exists if we can build it
+    # build period_bin if needed
     if 'period_bin' not in df_pp_new.columns and 'period' in df_pp_new.columns and period_bins is not None and period_labels is not None:
         df_pp_new = df_pp_new.copy()
         df_pp_new['period_month'] = df_pp_new['period'].astype(int)
         df_pp_new['period_bin'] = pd.cut(df_pp_new['period_month'], bins=period_bins, labels=period_labels, right=True)
 
-    # 2) identify categorical roots to create dummies for
+    # find categorical roots: include provided cat_cols and derive roots from cols_req
     cat_roots = set(cat_cols or [])
-    # derive roots from required columns by chopping at last underscore (keep 'period_bin' from 'period_bin_13-24')
     for c in cols_req:
         if '_' in c:
-            root = c.rsplit('_', 1)[0]
+            root = c.rsplit('_', 1)[0]  # keep 'period_bin' rather than 'period'
             cat_roots.add(root)
 
-    # create dummies for each categorical root (prefix exactly root)
+    # create dummies (prefix is exact root so names match model_columns)
     for root in sorted(cat_roots):
         if root in df_pp_new.columns:
             ser = df_pp_new[root].astype(str)
@@ -132,65 +112,63 @@ def _build_X_pp_for_model(df_pp_new,
         for col in dummies.columns:
             X_pp[col] = dummies[col].values
 
-    # 3) numeric columns: take from df_pp_new or create NaNs
+    # numeric columns
     if num_cols:
         for c in num_cols:
             if c in df_pp_new.columns:
                 X_pp[c] = pd.to_numeric(df_pp_new[c], errors='coerce')
             else:
                 X_pp[c] = np.nan
-        # fill using train medians if available
+        # fill numeric missing using train medians if available
         if train_medians is not None:
-            # train_medians may be pandas Series, dict, or DataFrame single row
             for c in num_cols:
-                fillval = np.nan
                 try:
                     if hasattr(train_medians, 'get'):
                         fillval = train_medians.get(c, np.nan)
                     elif c in getattr(train_medians, 'index', []):
                         fillval = train_medians[c]
+                    else:
+                        fillval = np.nan
                 except Exception:
                     fillval = np.nan
                 X_pp[c] = X_pp[c].fillna(fillval)
         else:
             X_pp[num_cols] = X_pp[num_cols].fillna(0.0)
-        # apply scaler if present
+        # scale if scaler provided
         if scaler is not None:
             try:
                 X_pp[num_cols] = scaler.transform(X_pp[num_cols])
             except Exception:
-                # fallback: leave as-is
                 X_pp[num_cols] = X_pp[num_cols].fillna(0.0)
 
-    # 4) ensure treatment exists
+    # ensure treatment
     if 'treatment' not in X_pp.columns:
         if 'treatment' in df_pp_new.columns:
             X_pp['treatment'] = pd.to_numeric(df_pp_new['treatment'], errors='coerce').fillna(0).astype(int).values
         else:
             X_pp['treatment'] = 0
 
-    # 5) Defensive: ensure all period_bin dummies for labels exist
+    # defensive: ensure all period_bin labels present
     if period_labels is not None:
         for lab in period_labels:
             col = f"period_bin_{lab}"
             if col not in X_pp.columns:
                 X_pp[col] = 0.0
 
-    # 6) ensure every required column exists (create zeros if missing)
+    # ensure every required column exists
     for c in cols_req:
         c = str(c).strip()
         if c not in X_pp.columns:
             X_pp[c] = 0.0
 
-    # 7) create interaction columns expected by model: treat_x_<period_dummy>
-    # we look for period dummy names in required columns
+    # create interaction columns treat_x_<period_dummy>
     period_dummy_cols_req = [c for c in cols_req if str(c).startswith('period_bin')]
     for pcol in period_dummy_cols_req:
         inter = f"treat_x_{pcol}"
         if inter not in X_pp.columns:
             X_pp[inter] = X_pp['treatment'] * X_pp.get(pcol, 0.0)
 
-    # 8) final reorder to match model exactly
+    # final reorder
     X_pp = X_pp.reindex(columns=cols_req, fill_value=0.0)
     return X_pp
 
@@ -204,15 +182,13 @@ def infer_new_patient_fixed(patient_data,
                             period_labels: list = DEFAULT_PERIOD_LABELS,
                             period_bins: Optional[list] = None,
                             horizon_map: Optional[dict] = None):
-
     """
-    Robust inference for a single new patient.
-    Returns dict: {'survival_curve', 'CATEs', 'errors', 'debug'(opt)}
+    Robust single-patient inference. Returns dict with survival, CATEs, errors, debug.
     """
     errors = {}
     debug = {}
 
-    # normalize single patient input
+    # normalize patient input
     if isinstance(patient_data, dict):
         df = pd.DataFrame([patient_data])
     else:
@@ -223,7 +199,7 @@ def infer_new_patient_fixed(patient_data,
     if 'treatment' not in df.columns:
         df['treatment'] = int(df.get('treatment', 0))
 
-    # artifact candidate filenames
+    # artifact candidates
     ART = {
         'patient_columns': ['causal_patient_columns.joblib', 'causal_patient_columns.pkl', 'causal_patient_columns.npy', 'causal_patient_columns.csv'],
         'patient_scaler': ['causal_patient_scaler.joblib', 'causal_patient_scaler.pkl'],
@@ -234,7 +210,7 @@ def infer_new_patient_fixed(patient_data,
         'pp_scaler': ['pp_scaler.joblib','pp_scaler.pkl']
     }
 
-    # load artifacts (local first, remote fallback)
+    # load artifacts
     patient_columns, pc_src = _try_load_artifact('patient_columns', ART['patient_columns'], outdir=outdir, base_url=base_url)
     patient_scaler, sc_src = _try_load_artifact('patient_scaler', ART['patient_scaler'], outdir=outdir, base_url=base_url)
     pp_train_medians, pm_src = _try_load_artifact('pp_train_medians', ART['pp_train_medians'], outdir=outdir, base_url=base_url)
@@ -248,14 +224,13 @@ def infer_new_patient_fixed(patient_data,
         'pooled_logit': lp_src, 'model_columns': mc_src, 'forests_bundle': fb_src, 'pp_scaler': pps_src
     }
 
-    # determine max_period (months) to create person-period rows
+    # determine max_period
     if max_period_override:
         max_period = int(max_period_override)
     else:
-        # default fallback
         max_period = 12
 
-    # build person-period toy rows for the new patient: 1..max_period
+    # build person-period rows for new patient
     rows = []
     for p in range(1, max_period+1):
         row = df.iloc[0].to_dict()
@@ -265,33 +240,30 @@ def infer_new_patient_fixed(patient_data,
         rows.append(row)
     df_pp_new = pd.DataFrame(rows)
 
-    # ---------- pooled-logit survival ----------
+    # pooled-logit survival
     survival_df = None
     if pooled_logit is None:
         errors['pooled_logit'] = "pooled-logit artifact missing; cannot compute survival."
     else:
         try:
-            # determine authoritative model_columns_list
+            # authoritative model columns
             if hasattr(pooled_logit, "feature_names_in_"):
                 model_columns_list = [str(x).strip() for x in list(pooled_logit.feature_names_in_)]
             else:
-                # fallback to artifact file loaded earlier
                 if isinstance(model_columns_art, pd.DataFrame):
                     model_columns_list = model_columns_art.iloc[:,0].astype(str).tolist()
                 elif isinstance(model_columns_art, (list, tuple, pd.Series, np.ndarray)):
                     model_columns_list = [str(x).strip() for x in list(model_columns_art)]
                 else:
-                    # last resort: try to coerce to list
                     try:
                         model_columns_list = [str(x).strip() for x in list(model_columns_art)]
                     except Exception:
                         model_columns_list = []
 
-            # minimal lists if not present; these mirror what you used at training
+            # default cat/num columns used to build X_pp
             cat_cols = ['period_bin','sex','smoking_status_clean','primary_site_group','subsite_clean','stage','hpv_clean']
             num_cols = ['age','ecog_ps','smoking_py_clean','time_since_rt_days']
 
-            # build X_pp robustly
             X_pp = _build_X_pp_for_model(
                 df_pp_new.copy(),
                 model_columns=model_columns_list,
@@ -304,26 +276,23 @@ def infer_new_patient_fixed(patient_data,
                 period_labels=period_labels
             )
 
-            # debug info
             debug['X_pp_columns'] = list(X_pp.columns)
             missing_after = [c for c in model_columns_list if c not in X_pp.columns]
             if missing_after:
                 errors['pooled_logit_build'] = f"Missing cols after build: {missing_after}"
 
-            # build treated & control counterfactual rows
+            # build treated & control counterfactuals
             X_t = X_pp.copy(); X_t['treatment'] = 1
             X_c = X_pp.copy(); X_c['treatment'] = 0
 
-            # ensure interaction columns (safety)
+            # ensure interaction columns exist
             for pcol in [c for c in model_columns_list if str(c).startswith('period_bin')]:
                 X_t[f'treat_x_{pcol}'] = X_t['treatment'] * X_t.get(pcol, 0)
                 X_c[f'treat_x_{pcol}'] = X_c['treatment'] * X_c.get(pcol, 0)
 
-            # final reindex to model feature order
             X_t = X_t.reindex(columns=model_columns_list, fill_value=0.0)
             X_c = X_c.reindex(columns=model_columns_list, fill_value=0.0)
 
-            # predict probabilities and compute discrete survival
             probs_t = pooled_logit.predict_proba(X_t)[:,1]
             probs_c = pooled_logit.predict_proba(X_c)[:,1]
             S_t = np.cumprod(1 - probs_t)
@@ -334,11 +303,54 @@ def infer_new_patient_fixed(patient_data,
         except Exception as e:
             errors['pooled_logit'] = f"pipelined survival predict failed: {e}"
 
-    # ---------- CATEs ) ----------
-        # ---------- CATEs (placeholder / best effort using forests_bundle if present) ----------
+    # ---------- build Xpatient (patient-level features) ----------
+    Xpatient = None
+    if patient_columns is None:
+        debug.setdefault('notes', []).append("patient_columns artifact missing; Xpatient not built")
+    else:
+        try:
+            if isinstance(patient_columns, (pd.Series, list, tuple, np.ndarray)):
+                pcols = list(patient_columns)
+            elif isinstance(patient_columns, dict):
+                if 'columns' in patient_columns:
+                    pcols = list(patient_columns['columns'])
+                else:
+                    pcols = list(patient_columns.keys())
+            elif isinstance(patient_columns, pd.DataFrame):
+                pcols = patient_columns.iloc[:,0].astype(str).tolist()
+            else:
+                pcols = list(patient_columns)
+
+            Xpatient = pd.DataFrame(np.zeros((1, len(pcols))), columns=pcols)
+
+            # fill from input df or infer one-hot
+            for c in pcols:
+                if c in df.columns:
+                    Xpatient.at[0, c] = df.at[0, c]
+                else:
+                    if isinstance(c, str) and '_' in c:
+                        root, tail = c.split('_', 1)
+                        if root in df.columns and str(df.at[0, root]) == tail:
+                            Xpatient.at[0, c] = 1.0
+
+            # apply patient_scaler if present
+            if patient_scaler is not None:
+                try:
+                    numeric_cols = Xpatient.select_dtypes(include=[np.number]).columns.tolist()
+                    if len(numeric_cols) > 0:
+                        Xpatient[numeric_cols] = patient_scaler.transform(Xpatient[numeric_cols])
+                except Exception as e:
+                    debug.setdefault('notes', []).append(f"patient_scaler failed to transform Xpatient: {e}")
+
+            Xpatient = Xpatient.reindex(columns=pcols, fill_value=0.0)
+
+        except Exception as e:
+            Xpatient = None
+            debug.setdefault('notes', []).append(f"Failed to construct Xpatient: {e}")
+
+    # ---------- CF CATE predictions ----------
     cate_results = {}
     if forests_bundle is None:
-        # fill NaN placeholders by period label -> consistent shape for caller
         for lab in period_labels:
             try:
                 months = int(str(lab).replace('+','').split('-')[-1])
@@ -346,13 +358,11 @@ def infer_new_patient_fixed(patient_data,
                 months = lab
             cate_results[months] = {'CATE': np.nan, 'error': 'forests_bundle missing'}
     else:
-        # forests_bundle can be a dict mapping label -> estimator
         for lab, est in forests_bundle.items():
-            # first try to map via horizon_map if provided
+            # map label -> months using horizon_map if provided
             if horizon_map is not None and lab in horizon_map:
                 months = horizon_map[lab]
             else:
-                # fallback: try to infer numeric month from label like "13-24" -> 24
                 try:
                     months = int(str(lab).replace('+','').split('-')[-1])
                 except Exception:
@@ -365,7 +375,6 @@ def infer_new_patient_fixed(patient_data,
             try:
                 candidate = est
                 if isinstance(est, dict):
-                    # try to find nested estimator that exposes effect()
                     for v in est.values():
                         if hasattr(v, 'effect'):
                             candidate = v
@@ -382,11 +391,8 @@ def infer_new_patient_fixed(patient_data,
             except Exception as e:
                 cate_results[months] = {'CATE': np.nan, 'error': str(e)}
 
-
-    # wrap up output
+    # finalize output
     out = {'survival_curve': survival_df, 'CATEs': cate_results, 'errors': errors}
     if return_raw:
         out['debug'] = debug
     return out
-
-# (module ends)
