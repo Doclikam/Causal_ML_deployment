@@ -422,7 +422,7 @@ def build_patient_scorecard_from_subgroups(
         scorecard = scorecard.sort_values("metric", ascending=False).reset_index(drop=True)
         return scorecard
 
-    # ----- CASE 2: probability CATE table -----
+    # probability CATE table -----
     cate_cols = [c for c in df.columns if c.startswith("CATE_")]
     if not cate_cols or "group" not in df.columns:
         return pd.DataFrame()
@@ -757,15 +757,20 @@ with tab_patient:
                 st.plotly_chart(fig, use_container_width=True)
 
                 with st.expander("Table of modelled survival over time (first few rows)"):
+                    df_display = surv_plot.rename(columns={
+                    "S_control": "S_radiotherapy",
+                     "S_treat": "S_radiochemo"
+                    })
                     st.dataframe(
-                        surv_plot[["period", "months", "S_control", "S_treat"]].head(),
-                        use_container_width=True
+                    df_display[["period", "months", "S_radiotherapy", "S_radiochemo"]].head(),
+                    use_container_width=True
                     )
+
 
             # ---------- ADVANCED DETAILS ----------
             if simple_view:
                 # still show patient-facing summary & download
-                st.subheader("4. Patient-friendly paragraph")
+                st.subheader("4. Patient Report Summary")
                 summary_text = generate_patient_summary(
                     patient=patient,
                     rmst_res=rmst_res,
@@ -804,7 +809,7 @@ with tab_patient:
                 )
 
             else:
-                # Advanced: CATEs, subgroup scorecard, etc.
+                # Advanced: CATEs, subgroup scorecard.
                 st.subheader("4. Change in chance of being alive & well at different times")
 
                 if not cates:
@@ -858,7 +863,7 @@ with tab_patient:
                         with st.expander("Technical issues at some time points"):
                             st.table(errors_cate[["horizon_label", "error"]])
 
-                st.subheader("5. Patient-friendly paragraph & download")
+                st.subheader("5. Patient-Summary Report:Download")
 
                 summary_text = generate_patient_summary(
                     patient=patient,
@@ -1090,6 +1095,143 @@ tended to respond in the dataset used to train the models.
 It is not personalised, but can help sense-check whether your patient sits in a group
 that typically showed **stronger** or **weaker** benefit from Chemo-RT.
     """)
+  
+# Helper for per-patient CATEs 
+def load_candidate_cates():
+    candidates = [
+        "cates_by_patient.csv",
+        "patient_level_cates.csv",
+        "timevarying_cates_by_patient.csv",
+        "subgroup_summary_cates.csv",  # maybe contains individual rows
+        "cates_patient_level.csv"
+    ]
+    for fn in candidates:
+        df = load_csv_with_fallback(fn)
+        if df is not None and not df.empty:
+            # prefer datasets that have any 'CATE' column or 'CATE_' prefixed columns
+            has_cate = any(c.startswith("CATE") or "CATE" in c for c in df.columns)
+            if has_cate or 'CATE' in df.columns or 'cate' in (c.lower() for c in df.columns):
+                return df, fn
+    return None, None
+
+# Load
+cates_df, cates_src = load_candidate_cates()
+
+st.markdown("### Distribution of estimated treatment effect (CATE) by subgroup")
+
+if cates_df is None:
+    st.info("Could not find a per-patient CATE file. Expected one of: "
+            "`cates_by_patient.csv`, `patient_level_cates.csv`, `timevarying_cates_by_patient.csv`, "
+            "or `subgroup_summary_cates.csv` with individual rows. "
+            "Run the training pipeline that produces per-patient CATEs, or place the CSV in outputs/.")
+else:
+    st.write(f"Loaded CATEs from `{cates_src}` (rows: {len(cates_df)})")
+
+    # find candidate numeric age column & candidate CATE column
+    # Prefer explicit columns: 'age' and a CATE column nearest to chosen horizon (rmst_horizon_months)
+    # detect carousel of CATE_ columns (e.g., 'CATE_36')
+    cate_cols = [c for c in cates_df.columns if c.startswith("CATE_") or c.lower().startswith("cate")]
+    # also accept 'CATE' single column
+    if 'CATE' in cates_df.columns:
+        cate_cols = ['CATE'] + [c for c in cate_cols if c != 'CATE']
+
+    # choose horizon column ? RMST horizon 
+    chosen_cate_col = None
+    if cate_cols:
+        # try to find one matching the app's rmst_horizon_months (if accessible), else pick the largest horizon
+        try:
+            target = int(rmst_horizon_months)
+        except Exception:
+            target = None
+        best = None
+        best_diff = 1e9
+        for c in cate_cols:
+            # extract number from the column name
+            s = ''.join(ch for ch in c if (ch.isdigit() or ch == '.'))
+            try:
+                num = int(float(s)) if s else None
+            except Exception:
+                num = None
+            if target is not None and num is not None:
+                diff = abs(num - target)
+                if diff < best_diff:
+                    best_diff = diff
+                    best = c
+            elif best is None:
+                best = c
+        chosen_cate_col = best or cate_cols[0]
+
+    # try common alternatives
+    if chosen_cate_col is None:
+        # try 'delta_risk' or 'CATE_percent' etc.
+        for alt in ['delta_risk','CATE_percent','cate_percent','effect']:
+            if alt in cates_df.columns:
+                chosen_cate_col = alt
+                break
+
+    if chosen_cate_col is None:
+        st.warning("No per-patient CATE column found (e.g. 'CATE_36' or 'CATE'). Cannot plot distribution.")
+    else:
+        st.markdown(f"**Using CATE column:** `{chosen_cate_col}` (note: values interpreted as absolute risk differences — convert to % for display)")
+
+        # choose grouping variable
+        possible_group_vars = [c for c in cates_df.columns if c not in [chosen_cate_col]]
+        # prioritize sensible ones
+        prefs = ['age','primary_site_group','stage','sex','hpv_clean']
+        ordered = [p for p in prefs if p in possible_group_vars] + [c for c in possible_group_vars if c not in prefs]
+        group_var = st.selectbox("Group by variable (choose 'age' to bin)", ordered, index=0)
+
+        # prepare plotting DataFrame
+        plot_df = cates_df.copy()
+        # ensure chosen cate col numeric
+        plot_df[chosen_cate_col] = pd.to_numeric(plot_df[chosen_cate_col], errors='coerce')
+
+        if group_var == 'age':
+            # bin ages and allow user to set bins
+            min_age = int(plot_df['age'].min()) if 'age' in plot_df.columns and not plot_df['age'].isna().all() else 20
+            max_age = int(plot_df['age'].max()) if 'age' in plot_df.columns and not plot_df['age'].isna().all() else 90
+            nbins = st.slider("Number of age bins", min_value=3, max_value=10, value=5)
+            bins = np.linspace(min_age, max_age, nbins+1)
+            labels = [f"{int(bins[i])}-{int(bins[i+1])}" for i in range(len(bins)-1)]
+            plot_df['age_bin'] = pd.cut(plot_df['age'].astype(float), bins=bins, labels=labels, include_lowest=True)
+            x_col = 'age_bin'
+            xlabel = "Age bin"
+        else:
+            x_col = group_var
+            xlabel = group_var
+
+        # drop rows with missing cate or grouping
+        plot_df = plot_df[[x_col, chosen_cate_col]].dropna()
+
+        if plot_df.empty:
+            st.warning("No data available for this grouping after dropping missing values.")
+        else:
+            # convert to percent points for clearer axis (if values between -1..1)
+            values = plot_df[chosen_cate_col]
+            use_percent = (values.abs().max() <= 1.5)  # likely in [−1,1] or [−0.2,0.2]
+            if use_percent:
+                plot_df[f"{chosen_cate_col}_pct"] = plot_df[chosen_cate_col] * 100.0
+                y_col = f"{chosen_cate_col}_pct"
+                y_label = "CATE (percentage points)"
+            else:
+                y_col = chosen_cate_col
+                y_label = chosen_cate_col
+
+            # create interactive boxplot with Plotly
+            fig_box = px.box(
+                plot_df,
+                x=x_col,
+                y=y_col,
+                points="outliers",
+                labels={x_col: xlabel, y_col: y_label},
+                title=f"Distribution of estimated treatment effect by {xlabel}"
+            )
+            fig_box.update_layout(xaxis_title=xlabel, yaxis_title=y_label, height=450)
+            st.plotly_chart(fig_box, use_container_width=True)
+
+            # show numeric summary table per group
+            summary = plot_df.groupby(x_col)[y_col].agg(['count','median','mean','std','min','max']).reset_index()
+            st.dataframe(summary, use_container_width=True)
 
     subgroup_df = load_csv_with_fallback("subgroup_summary_cates.csv")
     if subgroup_df is None or subgroup_df.empty:
@@ -1102,7 +1244,7 @@ that typically showed **stronger** or **weaker** benefit from Chemo-RT.
         st.dataframe(subgroup_df.head(20), use_container_width=True)
 
         st.markdown("""
-You can use this table (and the patient scorecard on the first tab) to identify:
+This table (and the patient scorecard on the first tab) to identify:
 
 - Subgroups where Chemo-RT looked **clearly favourable** on average  
 - Subgroups where benefit was **small or uncertain**
