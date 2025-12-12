@@ -661,6 +661,12 @@ def dev_show_inference_debug(out):
                         st.write("Could not run direct predict on forests:", str(e))
             except Exception as e:
                 st.write("Failed to load forests bundle:", str(e))
+        mc = model_columns
+        print(type(mc))
+        print(mc.head(10))
+        print(X_pp.head())
+        print(X_pp.nunique())   
+
         else:
             st.info("Forests bundle path reported but file not found locally.")
 
