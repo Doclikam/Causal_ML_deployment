@@ -1,24 +1,4 @@
 import os
-st.write('Xpatient (single-row):')
-st.dataframe(xp_df.T)
-except Exception as e:
-st.write('Xpatient present but could not display:', str(e))
-
-
-# ---------------- form ----------------
-with st.form('patient_form'):
-c1, c2, c3 = st.columns(3)
-with c1:
-age = st.number_input('Age', value=62, min_value=18)
-sex = st.selectbox('Sex', ['Male','Female','Missing'], index=1)
-ecog_ps = st.selectbox('ECOG', [0,1,2,3], index=0)
-with c2:
-primary_site_group = st.selectbox('Primary site', ['Oropharynx','Nasopharynx','Other_HNC','Missing'], index=0)
-pathology_group = st.selectbox('Histology', ['SCC','Other_epithelial','Other_rare','Missing'], index=0)
-smoking_status_clean = st.selectbox('Smoking', ['Current','Ex-Smoker','Non-Smoker','Unknown','Missing'], index=1)
-smoking_py_clean = st.number_input('Smoking pack-years', value=20.0, min_value=0.0)
-with c3:
-hpv_clean = st.selectbox('HPV', ['HPV_Positive','HPV_Negative','HPV_Unknown','Missing'], index=0)
 stage = st.selectbox('Stage', ['I','II','III','IV','Missing'], index=2)
 t_cat = st.selectbox('T', ['T1','T2','T3','T4','Tx'], index=1)
 treatment = st.selectbox('Planned strategy', options=[0,1], format_func=lambda x: 'RT alone' if x==0 else 'Chemo-RT')
