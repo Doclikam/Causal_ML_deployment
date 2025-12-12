@@ -634,33 +634,15 @@ with tab_patient:
                 max_period_override=int(max_period_months)
             )
 
-
-
-            raw_errors = out.get("errors", {})
-            filtered_errors = {
-                k: v for k, msg in raw_errors.items()
-                if k not in ["scaler"]
-           }
-            raw_errors = out.get("errors", {})
-            # keep the original message object name (msg) — return msg as value
-            filtered_errors = {
-                k: msg for k, msg in raw_errors.items()
-                if k not in ["scaler"]
-            }
-
             raw_errors = out.get("errors", {})
             filtered_errors = {
                 k: v for k, msg in raw_errors.items()
                 if k not in ["scaler"]
             }
-            raw_errors = out.get("errors", {})
-            # keep the original message object name (msg) — return msg as value
-            filtered_errors = {
-                k: msg for k, msg in raw_errors.items()
-                if k not in ["scaler"]
-            }
-
-
+            if filtered_errors:
+                with st.expander("Technical notes from modelling pipeline", expanded=False):
+                    for k, msg in filtered_errors.items():
+                        st.write(f"- **{k}**: {msg}")
 
             surv = out.get("survival_curve")
             cates = out.get("CATEs", {})
