@@ -3,7 +3,7 @@ from io import BytesIO
 from typing import Optional
 
 import joblib
-import matplotlib.pyplot as plt  # kept if you want later
+import matplotlib.pyplot as plt  
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -204,9 +204,6 @@ def describe_cate_table(cates: dict) -> str:
     arr = np.array([v for _, v in parsed])
     mh_arr = np.array([mh for mh, _ in parsed])
 
-    if arr.size == 0:
-        return "No valid CATE values available."
-
     idx_benefit = np.argmin(arr)
     idx_harm = np.argmax(arr)
 
@@ -333,7 +330,7 @@ def build_print_summary(patient, rmst_res, surv_df, horizon_months, cates) -> st
 
     if cates:
         lines.append("Change in event risk at each time point (Chemo-RT − RT):")
-        for h, v in sorted(cates.items(), key=lambda kv: float(kv[0]) if str(kv[0]).replace('.','',1).isdigit() else float('inf')):
+        for h, v in sorted(cates.items(), key=lambda kv: float(kv[0])):
             cate = v.get("CATE")
             if cate is None or np.isnan(cate):
                 continue
@@ -524,6 +521,185 @@ def categorize_benefit(delta_m: float, p_rt: float, p_chemo: float) -> str:
     return "Estimate uncertain"
 
 
+# Developer diagnostics function (always displayed)
+def dev_show_inference_debug(out):
+    st.markdown("### ⚙️ Developer diagnostic summary")
+    debug = out.get("debug", {}) or {}
+    errors = out.get("errors", {}) or {}
+    st.write("Top-level infer errors/warnings:")
+    st.json(errors)
+
+    # Artifact sources
+    art = debug.get("artifact_sources", {}) or {}
+    if art:
+        st.write("Artifact sources found:")
+        st.json(art)
+    else:
+        st.info("No artifact_sources in debug (infer may not have returned raw debug).")
+
+    # Show model_columns if available (string or csv link)
+    model_cols = None
+    model_cols_source = art.get("model_columns") if isinstance(art.get("model_columns"), str) else None
+    if model_cols_source and model_cols_source.startswith("local_csv:"):
+        model_cols_path = model_cols_source.split("local_csv:")[-1]
+        if os.path.exists(model_cols_path):
+            try:
+                model_cols = pd.read_csv(model_cols_path, header=None).iloc[:, 0].tolist()
+            except Exception:
+                model_cols = None
+
+    if debug.get("model_columns"):
+        model_cols = debug.get("model_columns")  # maybe infer included it
+    if model_cols is not None:
+        st.write(f"Model expects {len(model_cols)} columns; sample names:")
+        st.write(model_cols[:60])
+    else:
+        st.info("Model columns not found in debug.")
+
+    # Show scaler info if present locally
+    scaler_src = art.get("patient_scaler")
+    if scaler_src and isinstance(scaler_src, str) and scaler_src.startswith("local:"):
+        scaler_path = scaler_src.split("local:")[-1]
+        try:
+            if os.path.exists(scaler_path):
+                s = joblib.load(scaler_path)
+                st.write("Scaler type:", type(s))
+                if hasattr(s, "feature_names_in_"):
+                    st.write("scaler.feature_names_in_ (first 60):")
+                    st.write(list(getattr(s, "feature_names_in_")[:60]))
+                else:
+                    st.info("Scaler does not expose feature_names_in_.")
+            else:
+                st.info("Scaler reported but local file not found:", scaler_path)
+        except Exception as e:
+            st.write("Failed to load/inspect scaler:", str(e))
+
+    # Xpatient as produced by infer (numeric vector)
+    Xpatient = debug.get("Xpatient")
+    if Xpatient is not None:
+        st.write("Xpatient shape/type:", type(Xpatient))
+        try:
+            xp_df = pd.DataFrame(Xpatient) if not isinstance(Xpatient, pd.DataFrame) else Xpatient
+            # If it's 1-row vector with many columns, display row and summary
+            if xp_df.shape[0] == 1 and xp_df.shape[1] > 1:
+                st.write("Xpatient (single-row):")
+                st.dataframe(xp_df.T)
+                # column-wise variance / unique counts
+                summary = pd.DataFrame({
+                    "min": xp_df.min().iloc[:60].values,
+                    "max": xp_df.max().iloc[:60].values,
+                    "mean": xp_df.mean().iloc[:60].values,
+                    "n_unique": xp_df.nunique().iloc[:60].values
+                }, index=xp_df.columns[:60])
+                st.write("Column-wise summary (first 60 cols):")
+                st.dataframe(summary)
+            else:
+                st.write("Xpatient preview:")
+                st.dataframe(xp_df.head(10))
+        except Exception as e:
+            st.write("Could not display Xpatient as DataFrame:", str(e))
+            st.write(Xpatient)
+    else:
+        st.info("Xpatient not present in infer debug.")
+
+    # If forests bundle present locally, try to load and run a quick predict if possible
+    fb_path = art.get("forests_bundle") or art.get("forests") or None
+    if fb_path and isinstance(fb_path, str) and fb_path.startswith("local:"):
+        fb_local = fb_path.split("local:")[-1]
+        if os.path.exists(fb_local):
+            try:
+                st.write("Loading forests bundle for direct inspection:", fb_local)
+                forests = joblib.load(fb_local)
+                st.write("Loaded forests type:", type(forests))
+                # Attempt a quick predict using Xpatient if available
+                if Xpatient is not None:
+                    try:
+                        xp_df = pd.DataFrame(Xpatient)
+                        # ensure orientation is correct (1 row)
+                        if xp_df.shape[0] != 1 and xp_df.shape[1] == len(xp_df):
+                            xp_df = xp_df.T
+                        if hasattr(forests, "predict"):
+                            yhat = forests.predict(xp_df)
+                            st.write("Direct forests.predict result (shape):", np.shape(yhat))
+                            st.write("Sample prediction (first 5):", yhat[:5] if hasattr(yhat, "__len__") else str(yhat))
+                        elif isinstance(forests, dict):
+                            # try nested estimators
+                            for k, v in forests.items():
+                                try:
+                                    if hasattr(v, "predict"):
+                                        yhat = v.predict(xp_df)
+                                        st.write(f"Predict from nested key {k} (shape):", np.shape(yhat))
+                                        break
+                                except Exception:
+                                    continue
+                            st.info("Tried nested estimators in forests bundle.")
+                        else:
+                            st.info("Forests bundle has no 'predict' attribute testable here.")
+                    except Exception as e:
+                        st.write("Could not run direct predict on forests:", str(e))
+            except Exception as e:
+                st.write("Failed to load forests bundle:", str(e))
+        else:
+            st.info("Forests bundle path reported but file not found locally.")
+
+    # Quick synthetic test harness (button)
+    st.write("---")
+    st.write("Quick synthetic test: run infer for 3 different simple patients to compare Xpatient and outputs.")
+    if st.button("Run 3 synthetic test patients"):
+        small_patients = [
+            dict(age=40, sex="Male", primary_site_group="Oropharynx", pathology_group="SCC",
+                 hpv_clean="HPV_Positive", stage="II", t="T2", n="N0", m="M0", ecog_ps=0,
+                 smoking_status_clean="Non-Smoker", smoking_py_clean=0.0, treatment=0),
+            dict(age=75, sex="Female", primary_site_group="Other_HNC", pathology_group="Other_epithelial",
+                 hpv_clean="HPV_Negative", stage="IV", t="T4", n="N2", m="M0", ecog_ps=2,
+                 smoking_status_clean="Current", smoking_py_clean=40.0, treatment=0),
+            dict(age=55, sex="Male", primary_site_group="Nasopharynx", pathology_group="SCC",
+                 hpv_clean="HPV_Unknown", stage="III", t="T3", n="N1", m="M0", ecog_ps=1,
+                 smoking_status_clean="Ex-Smoker", smoking_py_clean=10.0, treatment=0)
+        ]
+        results = []
+        for i, p in enumerate(small_patients):
+            st.write(f"--- patient {i+1}")
+            try:
+                outi = infer_new_patient_fixed(
+                    patient_data=p,
+                    outdir=OUTDIR,
+                    base_url=BASE_URL,
+                    max_period_override=int(max_period_months),
+                    return_raw=True
+                )
+            except Exception as e:
+                st.write("infer error for synthetic patient:", e)
+                outi = {"debug": {}, "errors": {"infer_call": str(e)}}
+            results.append(outi)
+
+        # compare Xpatient vectors
+        Xs = [r.get("debug", {}).get("Xpatient") for r in results]
+        st.write("Xpatient vectors for the 3 synthetic patients (none -> missing):")
+        for idx, xp in enumerate(Xs):
+            st.write(f"patient {idx+1} Xpatient present:", xp is not None)
+            if xp is not None:
+                try:
+                    st.dataframe(pd.DataFrame(xp).T)
+                except Exception:
+                    st.write(xp)
+
+        # compare survival summaries or RMST deltas
+        deltas = []
+        for idx, r in enumerate(results):
+            try:
+                surv = r.get("survival_curve")
+                if surv is not None:
+                    s_df = pd.DataFrame(surv) if not isinstance(surv, pd.DataFrame) else surv
+                    rm = compute_rmst_from_survival(s_df, rmst_horizon_months)
+                    deltas.append(rm.get("delta"))
+                else:
+                    deltas.append(None)
+            except Exception as e:
+                deltas.append(str(e))
+        st.write("ΔRMST (Chemo-RT − RT) for synthetic patients:", deltas)
+
+
 # ----------------- LAYOUT: TABS -----------------
 tab_patient, tab_timecourse, tab_insights = st.tabs(
     ["👤 Patient decision aid", "⏱ Effect over time", "🧠 Patterns from data"]
@@ -630,7 +806,7 @@ with tab_patient:
         }
 
         with st.spinner("Running models for this patient..."):
-            # Run inference with diagnostics (return_raw=True) so we can see artifact sources/errors.
+            # Request raw debug+outputs from infer so we can inspect Xpatient, artifact sources, etc.
             try:
                 out = infer_new_patient_fixed(
                     patient_data=patient,
@@ -640,31 +816,25 @@ with tab_patient:
                     return_raw=True
                 )
             except Exception as e:
-                st.error("Internal error while running inference. See logs (or developer diagnostics) for details.")
+                st.error("infer_new_patient_fixed raised an exception.")
                 st.exception(e)
-                out = {"survival_curve": None, "CATEs": {}, "errors": {"infer_call": str(e)}, "debug": {}}
+                out = {"errors": {"infer_call": str(e)}, "debug": {}}
 
-            raw_errors = out.get("errors", {}) or {}
-            # exclude known non-actionable warning about scaler from prominent display
-            filtered_errors = {k: v for k, v in raw_errors.items() if k not in ["scaler"]}
+            # show diagnostics immediately (always visible)
+            try:
+                dev_show_inference_debug(out)
+            except Exception as e:
+                st.write("Developer diagnostics failed to render:", str(e))
+
+            raw_errors = out.get("errors", {})
+            filtered_errors = {
+                k: v for k, v in raw_errors.items()
+                if k not in ["scaler"]
+            }
             if filtered_errors:
                 with st.expander("Technical notes from modelling pipeline", expanded=False):
                     for k, msg in filtered_errors.items():
                         st.write(f"- **{k}**: {msg}")
-
-            # Show diagnostics (developer) on demand
-            debug_block = out.get("debug", {})
-            if isinstance(debug_block, dict) and debug_block:
-                if st.checkbox("Show developer diagnostics (artifact sources & Xpatient)", value=False):
-                    st.subheader("Developer diagnostics")
-                    st.json(debug_block.get("artifact_sources", {}))
-                    # Print Xpatient if available in debug
-                    xp = debug_block.get("Xpatient")
-                    if xp is not None:
-                        st.write("Xpatient (debug):")
-                        st.write(xp if isinstance(xp, (pd.DataFrame, dict, list)) else str(xp))
-                    st.write("Top-level errors from infer:")
-                    st.json(raw_errors)
 
             surv = out.get("survival_curve")
             cates = out.get("CATEs", {})
@@ -672,18 +842,17 @@ with tab_patient:
             # ---------- SURVIVAL & SUMMARY ----------
             st.subheader("2. Summary at your chosen time point")
 
-            if surv is None or (isinstance(surv, pd.DataFrame) and surv.empty):
+            if surv is None or (hasattr(surv, 'empty') and getattr(surv, 'empty')):
                 st.warning("Survival curve could not be computed for this patient.")
                 rmst_res = {"rmst_treat": np.nan, "rmst_control": np.nan, "delta": np.nan}
                 p_rt = p_chemo = np.nan
             else:
-                # ensure DataFrame and expected columns
+                # ensure survival_df is a DataFrame
                 if not isinstance(surv, pd.DataFrame):
                     try:
                         surv = pd.DataFrame(surv)
                     except Exception:
-                        st.warning("Unexpected survival curve format.")
-                        surv = None
+                        pass
 
                 rmst_res = compute_rmst_from_survival(surv, rmst_horizon_months)
                 rmst_t = rmst_res["rmst_treat"]
@@ -691,26 +860,20 @@ with tab_patient:
                 delta_m = rmst_res["delta"]
 
                 # survival probabilities at horizon
-                p_rt = p_chemo = np.nan
-                if surv is not None:
-                    s = surv.sort_values("days").copy()
-                    h_days = rmst_horizon_months * 30.0
-                    s_h = s[s["days"] <= h_days]
-                    if not s_h.empty:
-                        p_rt = s_h["S_control"].iloc[-1]
-                        p_chemo = s_h["S_treat"].iloc[-1]
+                s = surv.sort_values("days").copy()
+                h_days = rmst_horizon_months * 30.0
+                s_h = s[s["days"] <= h_days]
+                if not s_h.empty:
+                    p_rt = s_h["S_control"].iloc[-1]
+                    p_chemo = s_h["S_treat"].iloc[-1]
+                else:
+                    p_rt = p_chemo = np.nan
 
-                # guard categorize_benefit so UI can't crash if helper missing
+                # guard categorize_benefit input types
                 try:
                     label = categorize_benefit(delta_m, p_rt, p_chemo)
-                except NameError as ne:
-                    st.error("Developer diagnostic: function `categorize_benefit` not found.")
-                    st.exception(ne)
-                    label = "Estimate uncertain (internal helper missing)"
-                except Exception as ex:
-                    st.error("Unexpected error during clinical label computation.")
-                    st.exception(ex)
-                    label = "Estimate uncertain (error)"
+                except Exception:
+                    label = "Estimate uncertain"
 
                 # Summary metrics card
                 c_sum1, c_sum2, c_sum3, c_sum4 = st.columns(4)
@@ -754,10 +917,9 @@ with tab_patient:
 
             # Simple vs advanced view
             st.markdown("---")
-            # st.toggle was problematic in some Streamlit versions. Use checkbox instead.
-            simple_view = st.checkbox("Show advanced model details", value=False)
+            simple_view = st.toggle("Show advanced model details", value=False)
 
-            if surv is not None and isinstance(surv, pd.DataFrame) and not surv.empty:
+            if surv is not None and not (hasattr(surv, 'empty') and getattr(surv, 'empty')):
                 surv_plot = surv.copy()
                 surv_plot["months"] = surv_plot["days"] / 30.0
 
@@ -1016,10 +1178,7 @@ seems most influential in the underlying data.
     else:
         tv = tv.copy()
         tv["months"] = tv["period"] * (INTERVAL_DAYS / 30.0)
-        if "delta_rmst_period_days" in tv.columns:
-            tv["delta_rmst_period_months"] = tv["delta_rmst_period_days"] / 30.0
-        else:
-            tv["delta_rmst_period_months"] = np.nan
+        tv["delta_rmst_period_months"] = tv["delta_rmst_period_days"] / 30.0
 
         c1, c2 = st.columns(2)
 
@@ -1090,7 +1249,7 @@ seems most influential in the underlying data.
 
         if "hr" in tv.columns:
             tv_sub = tv[tv["months"] <= 60].copy()
-            if not tv_sub.empty and tv_sub["hr"].notna().any():
+            if not tv_sub.empty:
                 min_hr_row = tv_sub.loc[tv_sub["hr"].idxmin()]
                 peak_m = float(min_hr_row["months"])
                 peak_hr = float(min_hr_row["hr"])
