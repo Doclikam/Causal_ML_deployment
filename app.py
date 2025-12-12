@@ -69,22 +69,44 @@ rmst_horizon_months = st.sidebar.number_input(
 BASE_URL = DEFAULT_BASE_URL
 OUTDIR = DEFAULT_OUTDIR
 
-with st.sidebar.expander("Advanced: data source & model files", expanded=False):
-    st.markdown(
-        "These options are mainly for developers. "
-        "Defaults should work for routine use."
+# Old block to replace:
+# with st.sidebar.expander("Advanced: data source & model files", expanded=False):
+#     ...
+
+# Replace with this:
+if "show_advanced_sidebar" not in st.session_state:
+    st.session_state.show_advanced_sidebar = False
+
+st.sidebar.markdown("### Advanced (developer)")
+# a visible checkbox so the control is reliably clickable even if the expander UI misbehaves
+st.sidebar.checkbox(
+    "Show advanced data / model settings",
+    key="show_advanced_sidebar"
+)
+
+if st.session_state.show_advanced_sidebar:
+    st.sidebar.markdown(
+        "These options are mainly for developers. Defaults should work for routine use."
     )
-    BASE_URL = st.text_input(
+
+    # show inputs — use explicit keys so Streamlit won't confuse them with other widgets
+    BASE_URL = st.sidebar.text_input(
         "BASE_URL (raw GitHub path to outputs/)",
-        value=DEFAULT_BASE_URL
+        value=DEFAULT_BASE_URL,
+        key="dev_base_url"
     )
-    OUTDIR = st.text_input(
+    OUTDIR = st.sidebar.text_input(
         "Local outputs folder (if model files are stored locally)",
-        value=DEFAULT_OUTDIR
+        value=DEFAULT_OUTDIR,
+        key="dev_outdir"
     )
-    st.markdown(
+    st.sidebar.markdown(
         "**Note**: The app first looks in the local folder, then falls back to GitHub."
     )
+else:
+    # follow earlier default behaviour when advanced is hidden
+    BASE_URL = DEFAULT_BASE_URL
+    OUTDIR = DEFAULT_OUTDIR
 
 # ----------------- HELPERS -----------------
 def load_csv_with_fallback(filename: str) -> Optional[pd.DataFrame]:
