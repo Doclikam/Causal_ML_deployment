@@ -1,5 +1,4 @@
-*** Begin Patch
-*** Add File: utils/infer.py
+
 +import os
 +import io
 +import joblib
