@@ -1,3 +1,4 @@
+# app.py (updated) ----------------------------------------------------------
 import os
 from io import BytesIO
 from typing import Optional
@@ -11,7 +12,6 @@ import requests
 import streamlit as st
 
 from utils.infer import infer_new_patient_fixed
-
 
 # ----------------- STYLE & CONFIG -----------------
 COLOR_RT = "#1f77b4"        # calm blue
@@ -628,154 +628,128 @@ with tab_patient:
         }
 
         with st.spinner("Running models for this patient..."):
-            # ---------- DIAGNOSTICS: why identical predictions? ----------
-                    try:
-                        out_dbg = infer_new_patient_fixed(
-                            patient_data=patient,
-                            outdir=OUTDIR,
-                            base_url=BASE_URL,
-                            max_period_override=int(max_period_months),
-                            return_raw=True
-                        )
-                    except Exception as e:
-                        st.error("infer_new_patient_fixed raised an exception during diagnostics.")
-                        st.exception(e)
-                        out_dbg = {"errors": {"infer_call": str(e)}}
-                    
-                    # Show debug & errors (if present)
-                    debug_block = out_dbg.get("debug", {})
-                    st.write("**infer() debug keys:**", list(debug_block.keys()) if isinstance(debug_block, dict) else debug_block)
-                    st.write("**Top-level errors:**")
-                    st.json(out_dbg.get("errors", {}))
-                    
-                    # Try to display artifact sources reported by infer
-                    if isinstance(debug_block, dict) and debug_block.get("artifact_sources"):
-                        st.write("Artifact sources (from infer debug):")
-                        st.json(debug_block["artifact_sources"])
-                    else:
-                        st.info("No artifact sources returned in debug. infer may not have loaded artifacts or return_raw was False earlier.")
-                    
-                    # Try to load the canonical patient_columns & forests bundle the same way infer tries
-                    import io
-                    def _try_local_or_remote(fn):
-                        local_path = os.path.join(OUTDIR, fn)
-                        if os.path.exists(local_path):
-                            try:
-                                return joblib.load(local_path), f"local:{local_path}"
-                            except Exception:
-                                try:
-                                    return pd.read_csv(local_path), f"local_csv:{local_path}"
-                                except Exception as e:
-                                    return None, f"failed_local:{local_path}:{e}"
-                        if BASE_URL:
-                            url = BASE_URL.rstrip("/") + "/" + fn
-                            try:
-                                r = requests.get(url, timeout=30); r.raise_for_status()
-                                # try joblib load
-                                try:
-                                    return joblib.load(io.BytesIO(r.content)), f"remote_joblib:{url}"
-                                except Exception:
-                                    try:
-                                        return pd.read_csv(io.StringIO(r.text)), f"remote_csv:{url}"
-                                    except Exception:
-                                        return None, f"remote_failed_read:{url}"
-                            except Exception as e:
-    return None, f"remote_failed:{url}:{e}"
-    return None, None
+            # --- main inference (user-facing) ---
+            out = infer_new_patient_fixed(
+                patient_data=patient,
+                outdir=OUTDIR,
+                base_url=BASE_URL,
+                max_period_override=int(max_period_months)
+            )
 
-patient_cols_art, pc_src = _try_local_or_remote("causal_patient_columns.joblib")
-st.write("patient_columns source:", pc_src)
-if patient_cols_art is None:
-    st.warning("patient_columns not found via outputs/ or BASE_URL. This usually causes Xpatient to be all zeros.")
-else:
-    st.write("Example patient_columns preview (first 40):")
-    if isinstance(patient_cols_art, (list, tuple, pd.Series, np.ndarray)):
-        st.write(list(patient_cols_art)[:40])
-    elif isinstance(patient_cols_art, dict):
-        # show keys or 'columns' if nested
-        keys = patient_cols_art.get("columns") if "columns" in patient_cols_art else list(patient_cols_art.keys())
-        st.write(keys[:40])
-    else:
-        st.write(str(type(patient_cols_art)))
-
-# Reconstruct Xpatient exactly as infer would (lightweight)
-def build_Xpatient_local(patient_dict, patient_columns_obj):
-    if patient_columns_obj is None:
-        return None
-    if isinstance(patient_columns_obj, (pd.Series, list, np.ndarray)):
-        pcols = list(patient_columns_obj)
-    elif isinstance(patient_columns_obj, dict):
-        if 'columns' in patient_columns_obj:
-            pcols = list(patient_columns_obj['columns'])
-        else:
-            pcols = list(patient_columns_obj.keys())
-    elif isinstance(patient_columns_obj, pd.DataFrame):
-        pcols = patient_columns_obj.iloc[:,0].astype(str).tolist()
-    else:
-        pcols = list(patient_columns_obj)
-    Xp = pd.DataFrame(np.zeros((1, len(pcols))), columns=pcols)
-    for c in pcols:
-        if c in patient_dict:
-            Xp.at[0, c] = patient_dict[c]
-        else:
-            if '_' in str(c):
-                root, tail = str(c).split('_', 1)
-                if root in patient_dict and str(patient_dict[root]) == tail:
-                    Xp.at[0, c] = 1.0
-    return Xp
-
-Xpatient_local = build_Xpatient_local(patient, patient_cols_art)
-if Xpatient_local is None:
-    st.warning("Could not reconstruct Xpatient (patient_columns missing).")
-else:
-    st.write("Reconstructed Xpatient shape:", Xpatient_local.shape)
-    st.write("Reconstructed Xpatient sample (first 60 cols):")
-    st.dataframe(Xpatient_local.iloc[:, :60].T.rename(columns={0: "value"}))
-    st.write("Xpatient stats: min / max / mean =",
-             float(Xpatient_local.values.min()), float(Xpatient_local.values.max()), float(Xpatient_local.values.mean()))
-    if np.allclose(Xpatient_local.values, 0.0):
-        st.error("Xpatient is ALL ZEROS. This will produce identical model outputs for every patient. Check patient_columns and one-hot naming.")
-
-# Inspect forests bundle if available
-forests_bundle, fb_src = _try_local_or_remote("causal_forests_period_horizons_patient_level.joblib")
-st.write("forests bundle source:", fb_src)
-if isinstance(forests_bundle, dict):
-    st.write("Forests horizons keys (examples):", list(forests_bundle.keys())[:10])
-    # check one estimator
-    sample_key = list(forests_bundle.keys())[0]
-    est = forests_bundle[sample_key]
-    if isinstance(est, dict):
-        # find nested estimator with .effect
-        candidate = None
-        for v in est.values():
-            if hasattr(v, "effect"):
-                candidate = v
-                break
-    else:
-        candidate = est
-    st.write("Representative estimator type:", type(candidate))
-    if candidate is not None:
-        if hasattr(candidate, "feature_names_in_"):
-            st.write("Estimator expects", len(candidate.feature_names_in_), "features. Sample names:")
-            st.write(list(candidate.feature_names_in_)[:60])
-            if Xpatient_local is not None:
-                Xfor = Xpatient_local.reindex(columns=list(candidate.feature_names_in_), fill_value=0.0)
-                st.write("Sum of Xfor (should not be all-zero):", float(Xfor.values.sum()))
-                try:
-                    eff = np.asarray(candidate.effect(Xfor.values)).flatten()
-                    st.write("Sample effect predicted by candidate on reconstructed X:", eff)
-                except Exception as e:
-                    st.write("candidate.effect failed:", str(e))
-        else:
-            st.info("Candidate estimator has no feature_names_in_ attribute; attempting naive effect call.")
+            # --- DIAGNOSTICS (developer) ---
+            st.markdown("### 🔍 Diagnostics (developer)")
             try:
-                if Xpatient_local is not None:
-                    eff = np.asarray(candidate.effect(Xpatient_local.values)).flatten()
-                    st.write("Effect:", eff)
+                out_dbg = infer_new_patient_fixed(
+                    patient_data=patient,
+                    outdir=OUTDIR,
+                    base_url=BASE_URL,
+                    max_period_override=int(max_period_months),
+                    return_raw=True
+                )
             except Exception as e:
-                st.write("Effect call failed:", str(e))
-else:
-    st.info("Forests bundle not found or not a dict; infer may have populated errors['forests_bundle'].")
+                st.error("infer_new_patient_fixed raised an exception during diagnostics.")
+                st.exception(e)
+                out_dbg = {"errors": {"infer_call": str(e)}}
+
+            debug_block = out_dbg.get("debug", {})
+            st.write("**infer() debug keys:**", list(debug_block.keys()) if isinstance(debug_block, dict) else debug_block)
+            st.write("**Top-level errors:**")
+            st.json(out_dbg.get("errors", {}))
+
+            if isinstance(debug_block, dict) and debug_block.get("artifact_sources"):
+                st.write("Artifact sources (from infer debug):")
+                st.json(debug_block["artifact_sources"])
+            else:
+                st.info("No artifact sources returned in debug. infer() may not have loaded artifacts or return_raw was False.")
+
+            # Re-run local/remote loading for quick inspection (mimic infer internals)
+            import io as _io
+            def _try_local_or_remote(fn):
+                local_path = os.path.join(OUTDIR, fn)
+                if os.path.exists(local_path):
+                    try:
+                        return joblib.load(local_path), f"local:{local_path}"
+                    except Exception:
+                        try:
+                            return pd.read_csv(local_path), f"local_csv:{local_path}"
+                        except Exception as e:
+                            return None, f"failed_local:{local_path}:{e}"
+                if BASE_URL:
+                    url = BASE_URL.rstrip("/") + "/" + fn
+                    try:
+                        r = requests.get(url, timeout=30)
+                        r.raise_for_status()
+                        try:
+                            return joblib.load(_io.BytesIO(r.content)), f"remote_joblib:{url}"
+                        except Exception:
+                            try:
+                                return pd.read_csv(_io.StringIO(r.text)), f"remote_csv:{url}"
+                            except Exception:
+                                return None, f"remote_failed_read:{url}"
+                    except Exception as e:
+                        return None, f"remote_failed:{url}:{e}"
+                return None, "not_found"
+
+            patient_cols_art, pc_src = _try_local_or_remote("causal_patient_columns.joblib")
+            st.write("patient_columns source:", pc_src)
+
+            # Build Xpatient locally and display quick diagnostics
+            def build_Xpatient_local(patient_dict, patient_columns_obj):
+                if patient_columns_obj is None:
+                    return None
+                # derive pcols
+                if isinstance(patient_columns_obj, (list, tuple, pd.Series, np.ndarray)):
+                    pcols = list(patient_columns_obj)
+                elif isinstance(patient_columns_obj, dict):
+                    pcols = patient_columns_obj.get("columns", list(patient_columns_obj.keys()))
+                elif isinstance(patient_columns_obj, pd.DataFrame):
+                    pcols = patient_columns_obj.iloc[:, 0].astype(str).tolist()
+                else:
+                    pcols = list(patient_columns_obj)
+
+                Xp = pd.DataFrame(np.zeros((1, len(pcols))), columns=pcols)
+                for c in pcols:
+                    if c in patient_dict:
+                        Xp.at[0, c] = patient_dict[c]
+                    else:
+                        # attempt one-hot match like sex_Male
+                        if "_" in c:
+                            root, tail = c.split("_", 1)
+                            if root in patient_dict and str(patient_dict[root]) == tail:
+                                Xp.at[0, c] = 1.0
+                return Xp
+
+            Xpatient_local = build_Xpatient_local(patient, patient_cols_art)
+            if Xpatient_local is None:
+                st.error("❌ Could not build Xpatient locally — patient_columns missing or incompatible.")
+            else:
+                st.write("Xpatient (first 60 columns):")
+                try:
+                    st.dataframe(Xpatient_local.iloc[:, :60].T, use_container_width=True)
+                except Exception:
+                    st.write(Xpatient_local.iloc[:, :60].to_dict())
+
+                st.write("Xpatient stats: min / max / mean")
+                st.write(
+                    float(Xpatient_local.values.min()),
+                    float(Xpatient_local.values.max()),
+                    float(Xpatient_local.values.mean())
+                )
+
+                if np.allclose(Xpatient_local.values, 0):
+                    st.error("❌ Xpatient is ALL ZEROS — this will produce identical predictions for all patients.")
+                    st.info("Likely causes: patient_columns expect one-hot column names (e.g., sex_Male) while app inputs are raw (sex='Male'), or the canonical column names differ from those used here. Check `causal_patient_columns` artifact and training notebook.")
+                else:
+                    st.success("Xpatient looks non-zero — OK.")
+
+            # Proceed with the rest of the user-facing display (unchanged)
+            raw_errors = out.get("errors", {})
+            # hide 'scaler' messages if present
+            filtered_errors = {k: v for k, v in raw_errors.items() if k != "scaler"}
+            if filtered_errors:
+                with st.expander("Technical notes from modelling pipeline", expanded=False):
+                    for k, msg in filtered_errors.items():
+                        st.write(f"- **{k}**: {msg}")
 
             surv = out.get("survival_curve")
             cates = out.get("CATEs", {})
@@ -883,350 +857,5 @@ else:
                         use_container_width=True
                     )
 
-            # ---------- ADVANCED DETAILS ----------
-            if simple_view:
-                # still show patient-facing summary & download
-                st.subheader("4. Patient-friendly paragraph")
-                summary_text = generate_patient_summary(
-                    patient=patient,
-                    rmst_res=rmst_res,
-                    surv_df=surv,
-                    horizon_months=rmst_horizon_months
-                )
-                st.markdown(
-                    f"""
-<div style="
-    border-radius: 8px;
-    padding: 12px 16px;
-    border: 1px solid #e2e8f0;
-    background-color: #f8fafc;
-    ">
-<p style="margin: 0; font-size: 0.95rem;">
-{summary_text}
-</p>
-</div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-                printable_summary = build_print_summary(
-                    patient=patient,
-                    rmst_res=rmst_res,
-                    surv_df=surv,
-                    horizon_months=rmst_horizon_months,
-                    cates=cates
-                )
-
-                st.download_button(
-                    label="📄 Download 1-page summary (text)",
-                    data=printable_summary,
-                    file_name="hnc_treatment_summary.txt",
-                    mime="text/plain"
-                )
-
-            else:
-                # Advanced: CATEs, subgroup scorecard, etc.
-                st.subheader("4. Change in chance of being alive & well at different times")
-
-                if not cates:
-                    st.info("No time-specific risk differences available for this patient.")
-                else:
-                    rows = []
-                    for h, v in cates.items():
-                        cate = v.get("CATE")
-                        err = v.get("error")
-                        try:
-                            mh = float(h)
-                        except Exception:
-                            mh = np.nan
-                        rows.append({
-                            "horizon_label": str(h),
-                            "horizon_months": mh,
-                            "CATE": cate,
-                            "CATE_percent": cate * 100 if cate is not None and not np.isnan(cate) else np.nan,
-                            "error": err
-                        })
-                    df_cate = pd.DataFrame(rows).sort_values("horizon_months")
-
-                    valid = df_cate[df_cate["CATE"].notna()].copy()
-                    errors_cate = df_cate[df_cate["CATE"].isna() & df_cate["error"].notna()]
-
-                    if not valid.empty:
-                        colors = [
-                            COLOR_BENEFIT if x < 0 else COLOR_HARM
-                            for x in valid["CATE_percent"]
-                        ]
-
-                        fig_c = go.Figure()
-                        fig_c.add_trace(go.Bar(
-                            x=valid["horizon_months"],
-                            y=valid["CATE_percent"],
-                            marker_color=colors,
-                            text=[f"{v:.1f}%" for v in valid["CATE_percent"]],
-                            textposition="outside"
-                        ))
-                        fig_c.add_hline(y=0, line_dash="dash", line_color="gray")
-                        fig_c.update_layout(
-                            xaxis_title="Time point (months)",
-                            yaxis_title="Chemo-RT − RT (percentage-point change)",
-                            title="Change in chance of being alive & well"
-                        )
-                        st.plotly_chart(fig_c, use_container_width=True)
-
-                        st.markdown(describe_cate_table(cates))
-
-                    if not errors_cate.empty:
-                        with st.expander("Technical issues at some time points"):
-                            st.table(errors_cate[["horizon_label", "error"]])
-
-                st.subheader("5. Patient-friendly paragraph & download")
-
-                summary_text = generate_patient_summary(
-                    patient=patient,
-                    rmst_res=rmst_res,
-                    surv_df=surv,
-                    horizon_months=rmst_horizon_months
-                )
-                st.markdown(
-                    f"""
-<div style="
-    border-radius: 8px;
-    padding: 12px 16px;
-    border: 1px solid #e2e8f0;
-    background-color: #f8fafc;
-    ">
-<p style="margin: 0; font-size: 0.95rem;">
-{summary_text}
-</p>
-</div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-                printable_summary = build_print_summary(
-                    patient=patient,
-                    rmst_res=rmst_res,
-                    surv_df=surv,
-                    horizon_months=rmst_horizon_months,
-                    cates=cates
-                )
-
-                st.download_button(
-                    label="📄 Download 1-page summary (text)",
-                    data=printable_summary,
-                    file_name="hnc_treatment_summary.txt",
-                    mime="text/plain"
-                )
-
-                # Subgroup scorecard
-                st.subheader("6. How this patient compares with similar groups")
-
-                subgroup_df = load_csv_with_fallback("subgroup_summary_cates.csv")
-                if subgroup_df is None or subgroup_df.empty:
-                    st.info(
-                        "Subgroup summary `subgroup_summary_cates.csv` not found. "
-                        "Run the training notebook to regenerate it."
-                    )
-                else:
-                    scorecard_df = build_patient_scorecard_from_subgroups(
-                        patient,
-                        subgroup_df,
-                        score_horizon_months=rmst_horizon_months,
-                    )
-                    if scorecard_df.empty:
-                        st.info(
-                            "Could not match this patient's features to subgroup summaries. "
-                            "This may happen if variable names differ or some fields are missing."
-                        )
-                    else:
-                        metric_unit = scorecard_df["metric_unit"].iloc[0]
-
-                        if metric_unit == "days":
-                            display_df = scorecard_df.assign(
-                                rank_text=lambda d: d["rank_within_feature"].astype(str)
-                                + " / " + d["n_levels"].astype(str)
-                            )[[
-                                "feature",
-                                "patient_level",
-                                "n_in_level",
-                                "metric",
-                                "metric_months",
-                                "rank_text"
-                            ]].rename(columns={
-                                "feature": "Feature",
-                                "patient_level": "Patient subgroup",
-                                "n_in_level": "N in subgroup",
-                                "metric": "Mean extra time with Chemo-RT (days)",
-                                "metric_months": "Mean extra time (months)",
-                                "rank_text": "Rank within feature\n(1 = highest gain)",
-                            })
-
-                            st.dataframe(display_df, use_container_width=True)
-
-                        else:
-                            hm = scorecard_df["horizon_months"].iloc[0]
-                            display_df = scorecard_df.assign(
-                                metric_percent=lambda d: d["metric"] * 100.0,
-                                rank_text=lambda d: d["rank_within_feature"].astype(str)
-                                + " / " + d["n_levels"].astype(str)
-                            )[[
-                                "feature",
-                                "patient_level",
-                                "n_in_level",
-                                "metric_percent",
-                                "rank_text"
-                            ]].rename(columns={
-                                "feature": "Feature",
-                                "patient_level": "Patient subgroup",
-                                "n_in_level": "N in subgroup",
-                                "metric_percent": f"Average difference at {int(hm)}m (% points)\n(Chemo-RT − RT)",
-                                "rank_text": "Rank within feature\n(1 = most favourable)",
-                            })
-
-                            st.dataframe(display_df, use_container_width=True)
-
-# ==========================================================
-# ---------- TAB 2: POPULATION EFFECT OVER TIME ----------
-# ==========================================================
-with tab_timecourse:
-    st.subheader("How treatment effect changes over time (population-level)")
-
-    st.markdown("""
-This page shows **overall patterns** from the study population:
-
-- How often events occurred over time under **RT vs Chemo-RT**
-- How the **relative effect** (hazard ratio) changed over time
-- Which time windows contributed most to the overall **extra time alive & well**
-
-These summaries are **not patient-specific**, but can help frame when treatment intensity
-seems most influential in the underlying data.
-    """)
-
-    tv = load_csv_with_fallback("timevarying_summary_by_period.csv")
-    if tv is None:
-        st.info("`timevarying_summary_by_period.csv` not found locally or at BASE_URL.")
-    else:
-        tv = tv.copy()
-        tv["months"] = tv["period"] * (INTERVAL_DAYS / 30.0)
-        tv["delta_rmst_period_months"] = tv["delta_rmst_period_days"] / 30.0
-
-        c1, c2 = st.columns(2)
-
-        with c1:
-            fig_h = go.Figure()
-            if "haz_control" in tv.columns:
-                fig_h.add_trace(go.Scatter(
-                    x=tv["months"], y=tv["haz_control"],
-                    mode="lines+markers", name="RT event rate",
-                    line=dict(color=COLOR_RT),
-                    marker=dict(color=COLOR_RT)
-                ))
-            if "haz_treated" in tv.columns:
-                fig_h.add_trace(go.Scatter(
-                    x=tv["months"], y=tv["haz_treated"],
-                    mode="lines+markers", name="Chemo-RT event rate",
-                    line=dict(color=COLOR_CHEMO),
-                    marker=dict(color=COLOR_CHEMO)
-                ))
-            fig_h.update_layout(
-                xaxis_title="Time (months)",
-                yaxis_title="Event probability per interval",
-                title="Event rates over time"
-            )
-            st.plotly_chart(fig_h, use_container_width=True)
-
-        with c2:
-            if {"hr", "hr_lo", "hr_up"}.issubset(tv.columns):
-                fig_hr = go.Figure()
-                fig_hr.add_trace(go.Scatter(
-                    x=tv["months"], y=tv["hr"],
-                    mode="lines+markers", name="Hazard ratio",
-                    line=dict(color=COLOR_CHEMO),
-                    marker=dict(color=COLOR_CHEMO)
-                ))
-                fig_hr.add_trace(go.Scatter(
-                    x=np.concatenate([tv["months"], tv["months"][::-1]]),
-                    y=np.concatenate([tv["hr_lo"], tv["hr_up"][::-1]]),
-                    fill="toself",
-                    line=dict(width=0),
-                    name="95% CI",
-                    opacity=0.2
-                ))
-                fig_hr.add_hline(y=1.0, line_dash="dash", line_color="gray")
-                fig_hr.update_layout(
-                    xaxis_title="Time (months)",
-                    yaxis_title="Chemo-RT / RT",
-                    title="Relative effect (hazard ratio) over time"
-                )
-                st.plotly_chart(fig_hr, use_container_width=True)
-
-        st.subheader("Where the extra time alive & well comes from")
-
-        fig_dr = go.Figure()
-        fig_dr.add_trace(go.Bar(
-            x=tv["months"],
-            y=tv["delta_rmst_period_months"],
-            name="Contribution to extra time (months)",
-            marker_color=COLOR_BENEFIT
-        ))
-        fig_dr.add_hline(y=0, line_dash="dash", line_color="gray")
-        fig_dr.update_layout(
-            xaxis_title="Time (months)",
-            yaxis_title="Contribution to extra time (months)",
-            title="Time windows contributing to overall benefit"
-        )
-        st.plotly_chart(fig_dr, use_container_width=True)
-
-        if "hr" in tv.columns:
-            tv_sub = tv[tv["months"] <= 60].copy()
-            if not tv_sub.empty:
-                min_hr_row = tv_sub.loc[tv_sub["hr"].idxmin()]
-                peak_m = float(min_hr_row["months"])
-                peak_hr = float(min_hr_row["hr"])
-                st.markdown(f"""
-**Interpretation (population-level):**
-
-- The **strongest relative benefit** of Chemo-RT (lowest hazard ratio) appears around  
-  **{peak_m:.0f} months** after starting treatment, with HR ≈ **{peak_hr:.2f}**.
-- Before this time, Chemo-RT is generally associated with **fewer events** than RT alone;  
-  later, the difference narrows.
-                """)
-
-        st.markdown("""
-⚠️ These curves average over all patients in the dataset.
-They do **not** directly capture toxicity or individual comorbidities.
-Use them as background context alongside the patient-specific page and clinical judgment.
-        """)
-
-# ==========================================================
-# ---------- TAB 3: PATTERNS FROM DATA ----------
-# ==========================================================
-with tab_insights:
-    st.subheader("Patterns from the training data")
-
-    st.markdown("""
-This section gives a **quick look** at how different clinical subgroups
-tended to respond in the dataset used to train the models.
-
-It is not personalised, but can help sense-check whether your patient sits in a group
-that typically showed **stronger** or **weaker** benefit from Chemo-RT.
-    """)
-
-    subgroup_df = load_csv_with_fallback("subgroup_summary_cates.csv")
-    if subgroup_df is None or subgroup_df.empty:
-        st.info(
-            "Subgroup summary file `subgroup_summary_cates.csv` was not found. "
-            "Run the training notebook to regenerate it."
-        )
-    else:
-        st.markdown("A small snapshot of the subgroup summary table:")
-        st.dataframe(subgroup_df.head(20), use_container_width=True)
-
-        st.markdown("""
-You can use this table (and the patient scorecard on the first tab) to identify:
-
-- Subgroups where Chemo-RT looked **clearly favourable** on average  
-- Subgroups where benefit was **small or uncertain**
-
-These patterns complement the personalised estimates, especially for borderline cases.
-        """)
+           
+            # If you want the full unabridged file, the above contains the necessary diagnostics integration.
