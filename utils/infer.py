@@ -1,14 +1,3 @@
-"""
-utils/infer.py
-
-Robust inference utilities for single-patient predictions:
- - pooled-logit survival prediction (counterfactual treated/control)
- - patient-level CATE predictions from a forests bundle
-Design goals:
- - import-time safe (no crashes if artifacts missing)
- - lazy-load artifacts from outputs/ (local) or optional base_url (raw files)
- - return structured output with errors + debug info
-"""
 
 import os
 import io
