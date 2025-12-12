@@ -199,46 +199,42 @@ def infer_new_patient_fixed(patient_data, return_raw=False, outdir=DEFAULT_OUTDI
             errors['pooled_logit'] = f"pipelined survival predict failed: {e}"
 
     # ---------- build Xpatient (for CF) ----------
-    Xpatient = None
-    if patient_columns is None:
-        errors['patient_columns'] = "patient_columns artifact missing. CF prediction will be impossible without canonical patient feature names."
-    else:
+        # apply scaler if present )
+    if patient_scaler is not None:
         try:
-            # normalize representation of patient_columns
-            if isinstance(patient_columns, (pd.Series, list, np.ndarray)):
-                pcols = list(patient_columns)
-            elif isinstance(patient_columns, dict):
-                # if stored as {'columns': [...]} or mapping
-                if 'columns' in patient_columns:
-                    pcols = list(patient_columns['columns'])
-                else:
-                    pcols = list(patient_columns.keys())
+            # If scaler exposes feature names, use that ordering
+            if hasattr(patient_scaler, "feature_names_in_"):
+                scaler_cols = list(patient_scaler.feature_names_in_)
             else:
-                pcols = list(patient_columns)
+                # fallback: assume these numeric names if present
+                scaler_cols = [c for c in Xpatient.columns if c in ['age','ecog_ps','BED_eff','EQD2','smoking_py_clean','time_since_rt_days']]
 
-            Xpatient = pd.DataFrame(np.zeros((1, len(pcols))), columns=pcols)
-            # Fill numeric or one-hot style columns
-            for c in pcols:
-                if c in df.columns:
-                    Xpatient.at[0, c] = df.at[0, c]
-                else:
-                    # try to infer one-hot: e.g., sex_Male when df.sex == 'Male'
-                    if '_' in c:
-                        root, tail = c.split('_', 1)
-                        if root in df.columns and str(df.at[0, root]) == tail:
-                            Xpatient.at[0, c] = 1.0
-            # apply scaler if present (safe)
-            if patient_scaler is not None:
-                try:
-                    numeric_cols = Xpatient.select_dtypes(include=[np.number]).columns.tolist()
-                    if len(numeric_cols) > 0:
-                        Xpatient[numeric_cols] = patient_scaler.transform(Xpatient[numeric_cols])
-                except Exception:
-                    errors['scaler'] = "scaler exists but failed to transform Xpatient; proceeding without scaling"
-            Xpatient = Xpatient.reindex(columns=pcols, fill_value=0.0)
+            # ensure these columns exist in Xpatient; add missing as zeros (or from pp_train_medians)
+            for sc_col in scaler_cols:
+                if sc_col not in Xpatient.columns:
+                    fill_val = None
+                    try:
+                        # try to take from pp_train_medians if available
+                        if isinstance(pp_train_medians, dict) and sc_col in pp_train_medians:
+                            fill_val = pp_train_medians[sc_col]
+                        elif hasattr(pp_train_medians, "get"):
+                            fill_val = pp_train_medians.get(sc_col, 0.0)
+                        else:
+                            fill_val = 0.0
+                    except Exception:
+                        fill_val = 0.0
+                    Xpatient[sc_col] = float(fill_val)
+
+            # select numeric matrix in scaler order, transform
+            Xnum = Xpatient[scaler_cols].astype(float).copy()
+            Xnum_scaled = patient_scaler.transform(Xnum)
+            Xnum_scaled = pd.DataFrame(Xnum_scaled, columns=scaler_cols, index=Xpatient.index)
+            # put scaled back
+            for c in scaler_cols:
+                Xpatient[c] = Xnum_scaled[c].values
         except Exception as e:
-            errors['Xpatient'] = f"Failed to construct Xpatient: {e}"
-            Xpatient = None
+            errors['scaler'] = f"scaler exists but failed to transform Xpatient; proceeding without scaling: {e}"
+
 
     # ---------- CF CATE predictions ----------
     cate_results = {}
