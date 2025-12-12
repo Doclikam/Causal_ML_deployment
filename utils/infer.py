@@ -553,22 +553,6 @@ def infer_new_patient_fixed(
 
     return out
 
-# convenience alias
+# alias
 infer = infer_new_patient_fixed
 
-# run to see if okay
-if __name__ == "__main__":
-    print("Running utils/infer.py smoke test (no artifacts required).")
-    demo_patient = {
-        "age": 62, "sex": "Male", "ecog_ps": 1,
-        "smoking_status_clean": "Ex-Smoker", "smoking_py_clean": 20,
-        "primary_site_group": "Oropharynx", "subsite_clean": "Tonsil",
-        "stage": "III", "hpv_clean": "HPV_Positive", "treatment": 0,
-        "patient_id": "demo_local"
-    }
-    res = infer_new_patient_fixed(demo_patient, return_raw=True, max_period_override=6)
-    print("Keys returned:", list(res.keys()))
-    if res.get("errors"):
-        print("Errors (smoke test):", res["errors"])
-    if res.get("survival_curve") is not None:
-        print("Survival shape:", res["survival_curve"].shape)
