@@ -1,4 +1,3 @@
-
 import os
 from io import BytesIO
 from typing import Optional
@@ -25,7 +24,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-å
 st.title("Head & Neck Cancer: RT vs ChemoRT Outcome Explorer")
 
 st.markdown(
