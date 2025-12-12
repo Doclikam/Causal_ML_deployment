@@ -162,7 +162,12 @@ def infer_new_patient_fixed(patient_data, return_raw=False, outdir=DEFAULT_OUTDI
                 # Minimal fallback: use pp_train_medians and create numeric columns; keep categorical zeroed
                 X_pp = pd.DataFrame(index=df_pp_new.index)
                 if pp_train_medians is not None:
-                    for c, v in (pp_train_medians.items() if isinstance(pp_train_medians, dict) else ([])):
+                    # pp_train_medians may be a dict-like
+                    try:
+                        items = pp_train_medians.items()
+                    except Exception:
+                        items = []
+                    for c, v in items:
                         X_pp[c] = pd.to_numeric(df_pp_new.get(c, pd.Series([np.nan]*len(df_pp_new))), errors='coerce').fillna(v)
                 # ensure model_columns exist
                 if isinstance(model_columns, (pd.Series, list, np.ndarray)):
@@ -199,23 +204,56 @@ def infer_new_patient_fixed(patient_data, return_raw=False, outdir=DEFAULT_OUTDI
             errors['pooled_logit'] = f"pipelined survival predict failed: {e}"
 
     # ---------- build Xpatient (for CF) ----------
+    # Build canonical patient-level vector (Xpatient) from patient_columns and the df row
     Xpatient = None
-       # apply scaler if present 
-    if patient_scaler is not None:
+    if patient_columns is None:
+        errors['patient_columns'] = "patient_columns artifact missing. CF prediction will be impossible without canonical patient feature names."
+    else:
         try:
-            # If scaler exposes feature names, use that ordering
+            # normalize representation of patient_columns
+            if isinstance(patient_columns, (pd.Series, list, np.ndarray)):
+                pcols = list(patient_columns)
+            elif isinstance(patient_columns, dict):
+                # if stored as {'columns': [...]} or mapping
+                if 'columns' in patient_columns:
+                    pcols = list(patient_columns['columns'])
+                else:
+                    pcols = list(patient_columns.keys())
+            else:
+                pcols = list(patient_columns)
+
+            Xpatient = pd.DataFrame(np.zeros((1, len(pcols))), columns=pcols)
+
+            # Fill numeric or one-hot style columns
+            for c in pcols:
+                if c in df.columns:
+                    Xpatient.at[0, c] = df.at[0, c]
+                else:
+                    # try to infer one-hot: e.g., sex_Male when df.sex == 'Male'
+                    if '_' in c:
+                        root, tail = c.split('_', 1)
+                        if root in df.columns and str(df.at[0, root]) == tail:
+                            Xpatient.at[0, c] = 1.0
+            Xpatient = Xpatient.reindex(columns=pcols, fill_value=0.0)
+        except Exception as e:
+            errors['Xpatient'] = f"Failed to construct Xpatient: {e}"
+            Xpatient = None
+
+    # apply scaler to Xpatient if present (safe, robust)
+    if Xpatient is not None and patient_scaler is not None:
+        try:
+            # If scaler exposes feature names, prefer exactly those
             if hasattr(patient_scaler, "feature_names_in_"):
                 scaler_cols = list(patient_scaler.feature_names_in_)
             else:
-                # fallback: assume these numeric names if present
+                # fallback: reasonable numeric candidates
                 scaler_cols = [c for c in Xpatient.columns if c in ['age','ecog_ps','BED_eff','EQD2','smoking_py_clean','time_since_rt_days']]
 
-            # ensure these columns exist in Xpatient; add missing as zeros (or from pp_train_medians)
+            # Ensure parity: add missing scaler cols to Xpatient (fill with pp_train_medians or 0)
             for sc_col in scaler_cols:
                 if sc_col not in Xpatient.columns:
-                    fill_val = None
+                    fill_val = 0.0
                     try:
-                        # try to take from pp_train_medians if available
                         if isinstance(pp_train_medians, dict) and sc_col in pp_train_medians:
                             fill_val = pp_train_medians[sc_col]
                         elif hasattr(pp_train_medians, "get"):
@@ -226,23 +264,29 @@ def infer_new_patient_fixed(patient_data, return_raw=False, outdir=DEFAULT_OUTDI
                         fill_val = 0.0
                     Xpatient[sc_col] = float(fill_val)
 
-            # select numeric matrix in scaler order, transform
+            # Transform only the scaler columns in the right order
             Xnum = Xpatient[scaler_cols].astype(float).copy()
             Xnum_scaled = patient_scaler.transform(Xnum)
             Xnum_scaled = pd.DataFrame(Xnum_scaled, columns=scaler_cols, index=Xpatient.index)
-            # put scaled back
             for c in scaler_cols:
                 Xpatient[c] = Xnum_scaled[c].values
         except Exception as e:
             errors['scaler'] = f"scaler exists but failed to transform Xpatient; proceeding without scaling: {e}"
 
-            Xpatient = None
+    # expose Xpatient in debug for downstream diagnostic display
+    try:
+        debug['Xpatient'] = Xpatient.copy() if Xpatient is not None else None
+    except Exception:
+        try:
+            debug['Xpatient'] = Xpatient.values if hasattr(Xpatient, 'values') else str(Xpatient)
+        except Exception:
+            debug['Xpatient'] = None
 
     # ---------- CF CATE predictions ----------
     cate_results = {}
     if forests_bundle is None:
         errors['forests_bundle'] = "forests bundle not found in outputs or via base_url."
-        # fill placeholder NaNs
+        # fill placeholder NaNs for expected period_labels
         for lab in period_labels:
             # try to infer month integer
             try:
@@ -252,7 +296,9 @@ def infer_new_patient_fixed(patient_data, return_raw=False, outdir=DEFAULT_OUTDI
             cate_results[months] = {'CATE': np.nan, 'error': errors['forests_bundle']}
     else:
         # forests_bundle can be a dict mapping label->estimator
-        for lab, est in forests_bundle.items():
+        # If it's not a dict (single object), try to handle gracefully
+        bundle_items = forests_bundle.items() if isinstance(forests_bundle, dict) else [(str(k), v) for k, v in enumerate([forests_bundle])]
+        for lab, est in bundle_items:
             # map label -> months
             if horizon_map and lab in horizon_map:
                 months = horizon_map[lab]
@@ -274,13 +320,28 @@ def infer_new_patient_fixed(patient_data, return_raw=False, outdir=DEFAULT_OUTDI
                         if hasattr(v, 'effect'):
                             candidate = v
                             break
-                # if estimator exposes feature_names_in_, reindex accordingly
+
+                # Align input to estimator feature names if possible
                 if hasattr(candidate, "feature_names_in_"):
                     req = list(candidate.feature_names_in_)
-                    Xfor = Xpatient.reindex(columns=req, fill_value=0.0)
-                    Xfor_in = Xfor.values
+                    for c in req:
+                        if c not in Xpatient.columns:
+                            Xpatient[c] = 0.0
+                    Xfor_in = Xpatient[req].values
                 else:
-                    Xfor_in = Xpatient.values
+                    # fallback to model_columns if available
+                    if isinstance(model_columns, (list, pd.Series, np.ndarray, pd.DataFrame)):
+                        if isinstance(model_columns, pd.DataFrame):
+                            req = model_columns.iloc[:,0].astype(str).tolist()
+                        else:
+                            req = list(model_columns)
+                        for c in req:
+                            if c not in Xpatient.columns:
+                                Xpatient[c] = 0.0
+                        Xfor_in = Xpatient[req].values
+                    else:
+                        Xfor_in = Xpatient.values
+
                 eff = np.asarray(candidate.effect(Xfor_in)).flatten()
                 val = float(eff[0]) if eff.size > 0 else np.nan
                 cate_results[months] = {'CATE': val, 'error': None}
@@ -298,5 +359,5 @@ def infer_new_patient_fixed(patient_data, return_raw=False, outdir=DEFAULT_OUTDI
         out['debug'] = debug
     return out
 
-# infer patient
+# convenience alias
 infer = infer_new_patient_fixed
