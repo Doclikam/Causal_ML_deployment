@@ -175,4 +175,3 @@ if submitted:
 
 st.markdown('---')
 st.caption('Developer: artifacts are taken from local OUTDIR first, then from BASE_URL if missing.')
-```
