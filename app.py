@@ -629,57 +629,57 @@ with tab_patient:
 
         with st.spinner("Running models for this patient..."):
             # ---------- DIAGNOSTICS: why identical predictions? ----------
-try:
-    out_dbg = infer_new_patient_fixed(
-        patient_data=patient,
-        outdir=OUTDIR,
-        base_url=BASE_URL,
-        max_period_override=int(max_period_months),
-        return_raw=True
-    )
-except Exception as e:
-    st.error("infer_new_patient_fixed raised an exception during diagnostics.")
-    st.exception(e)
-    out_dbg = {"errors": {"infer_call": str(e)}}
-
-# Show debug & errors (if present)
-debug_block = out_dbg.get("debug", {})
-st.write("**infer() debug keys:**", list(debug_block.keys()) if isinstance(debug_block, dict) else debug_block)
-st.write("**Top-level errors:**")
-st.json(out_dbg.get("errors", {}))
-
-# Try to display artifact sources reported by infer
-if isinstance(debug_block, dict) and debug_block.get("artifact_sources"):
-    st.write("Artifact sources (from infer debug):")
-    st.json(debug_block["artifact_sources"])
-else:
-    st.info("No artifact sources returned in debug. infer may not have loaded artifacts or return_raw was False earlier.")
-
-# Try to load the canonical patient_columns & forests bundle the same way infer tries
-import io
-def _try_local_or_remote(fn):
-    local_path = os.path.join(OUTDIR, fn)
-    if os.path.exists(local_path):
-        try:
-            return joblib.load(local_path), f"local:{local_path}"
-        except Exception:
-            try:
-                return pd.read_csv(local_path), f"local_csv:{local_path}"
-            except Exception as e:
-                return None, f"failed_local:{local_path}:{e}"
-    if BASE_URL:
-        url = BASE_URL.rstrip("/") + "/" + fn
-        try:
-            r = requests.get(url, timeout=30); r.raise_for_status()
-            # try joblib load
-            try:
-                return joblib.load(io.BytesIO(r.content)), f"remote_joblib:{url}"
-            except Exception:
-                try:
-                    return pd.read_csv(io.StringIO(r.text)), f"remote_csv:{url}"
-                except Exception:
-                    return None, f"remote_failed_read:{url}"
-        except Exception as e:
+                    try:
+                        out_dbg = infer_new_patient_fixed(
+                            patient_data=patient,
+                            outdir=OUTDIR,
+                            base_url=BASE_URL,
+                            max_period_override=int(max_period_months),
+                            return_raw=True
+                        )
+                    except Exception as e:
+                        st.error("infer_new_patient_fixed raised an exception during diagnostics.")
+                        st.exception(e)
+                        out_dbg = {"errors": {"infer_call": str(e)}}
+                    
+                    # Show debug & errors (if present)
+                    debug_block = out_dbg.get("debug", {})
+                    st.write("**infer() debug keys:**", list(debug_block.keys()) if isinstance(debug_block, dict) else debug_block)
+                    st.write("**Top-level errors:**")
+                    st.json(out_dbg.get("errors", {}))
+                    
+                    # Try to display artifact sources reported by infer
+                    if isinstance(debug_block, dict) and debug_block.get("artifact_sources"):
+                        st.write("Artifact sources (from infer debug):")
+                        st.json(debug_block["artifact_sources"])
+                    else:
+                        st.info("No artifact sources returned in debug. infer may not have loaded artifacts or return_raw was False earlier.")
+                    
+                    # Try to load the canonical patient_columns & forests bundle the same way infer tries
+                    import io
+                    def _try_local_or_remote(fn):
+                        local_path = os.path.join(OUTDIR, fn)
+                        if os.path.exists(local_path):
+                            try:
+                                return joblib.load(local_path), f"local:{local_path}"
+                            except Exception:
+                                try:
+                                    return pd.read_csv(local_path), f"local_csv:{local_path}"
+                                except Exception as e:
+                                    return None, f"failed_local:{local_path}:{e}"
+                        if BASE_URL:
+                            url = BASE_URL.rstrip("/") + "/" + fn
+                            try:
+                                r = requests.get(url, timeout=30); r.raise_for_status()
+                                # try joblib load
+                                try:
+                                    return joblib.load(io.BytesIO(r.content)), f"remote_joblib:{url}"
+                                except Exception:
+                                    try:
+                                        return pd.read_csv(io.StringIO(r.text)), f"remote_csv:{url}"
+                                    except Exception:
+                                        return None, f"remote_failed_read:{url}"
+                            except Exception as e:
             return None, f"remote_failed:{url}:{e}"
     return None, None
 
