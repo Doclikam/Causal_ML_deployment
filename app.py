@@ -1112,5 +1112,3 @@ You can use this table (and the patient scorecard on the first tab) to identify:
 
 These patterns complement the personalised estimates, especially for borderline cases.
         """)
-
-surv.head()
