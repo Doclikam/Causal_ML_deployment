@@ -680,7 +680,7 @@ with tab_patient:
                                     except Exception:
                                         return None, f"remote_failed_read:{url}"
                             except Exception as e:
-            return None, f"remote_failed:{url}:{e}"
+    return None, f"remote_failed:{url}:{e}"
     return None, None
 
 patient_cols_art, pc_src = _try_local_or_remote("causal_patient_columns.joblib")
