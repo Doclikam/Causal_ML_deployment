@@ -202,7 +202,9 @@ def infer_new_patient_fixed(patient_data,
                             max_period_override: Optional[int] = None,
                             interval_days: int = DEFAULT_INTERVAL_DAYS,
                             period_labels: list = DEFAULT_PERIOD_LABELS,
-                            period_bins: Optional[list] = None):
+                            period_bins: Optional[list] = None,
+                            horizon_map: Optional[dict] = None):
+
     """
     Robust inference for a single new patient.
     Returns dict: {'survival_curve', 'CATEs', 'errors', 'debug'(opt)}
@@ -332,7 +334,8 @@ def infer_new_patient_fixed(patient_data,
         except Exception as e:
             errors['pooled_logit'] = f"pipelined survival predict failed: {e}"
 
-    # ---------- CATEs (placeholder / best effort using forests_bundle if present) ----------
+    # ---------- CATEs ) ----------
+        # ---------- CATEs (placeholder / best effort using forests_bundle if present) ----------
     cate_results = {}
     if forests_bundle is None:
         # fill NaN placeholders by period label -> consistent shape for caller
@@ -343,38 +346,42 @@ def infer_new_patient_fixed(patient_data,
                 months = lab
             cate_results[months] = {'CATE': np.nan, 'error': 'forests_bundle missing'}
     else:
-        # Attempt to call effect() for each horizon if possible; robust try/except
+        # forests_bundle can be a dict mapping label -> estimator
         for lab, est in forests_bundle.items():
-            # map label -> months
-            try:
-                months = int(str(lab).replace('+','').split('-')[-1])
-            except Exception:
-                months = lab
+            # first try to map via horizon_map if provided
+            if horizon_map is not None and lab in horizon_map:
+                months = horizon_map[lab]
+            else:
+                # fallback: try to infer numeric month from label like "13-24" -> 24
+                try:
+                    months = int(str(lab).replace('+','').split('-')[-1])
+                except Exception:
+                    months = lab
+
+            if Xpatient is None:
+                cate_results[months] = {'CATE': np.nan, 'error': 'Xpatient not built'}
+                continue
+
             try:
                 candidate = est
                 if isinstance(est, dict):
-                    # try to find nested estimator exposing effect()
+                    # try to find nested estimator that exposes effect()
                     for v in est.values():
                         if hasattr(v, 'effect'):
                             candidate = v
                             break
                 if hasattr(candidate, "feature_names_in_"):
                     req = list(candidate.feature_names_in_)
-                    # build patient-level Xpatient (simple approach)
-                    Xpatient = pd.DataFrame(np.zeros((1, len(req))), columns=req)
-                    # try to fill from input df (best-effort)
-                    for c in req:
-                        root = c.split('_',1)[0]
-                        if root in df.columns and c in df.columns:
-                            Xpatient.at[0,c] = df.at[0,c]
-                    Xfor_in = Xpatient.values
+                    Xfor = Xpatient.reindex(columns=req, fill_value=0.0)
+                    Xfor_in = Xfor.values
                 else:
-                    Xfor_in = df.values
+                    Xfor_in = Xpatient.values
                 eff = np.asarray(candidate.effect(Xfor_in)).flatten()
                 val = float(eff[0]) if eff.size > 0 else np.nan
                 cate_results[months] = {'CATE': val, 'error': None}
             except Exception as e:
                 cate_results[months] = {'CATE': np.nan, 'error': str(e)}
+
 
     # wrap up output
     out = {'survival_curve': survival_df, 'CATEs': cate_results, 'errors': errors}
