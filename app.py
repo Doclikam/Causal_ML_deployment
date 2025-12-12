@@ -627,22 +627,34 @@ with tab_patient:
         }
 
         with st.spinner("Running models for this patient..."):
-            out = infer_new_patient_fixed(
-                patient_data=patient,
-                outdir=OUTDIR,
-                base_url=BASE_URL,
-                max_period_override=int(max_period_months)
-            )
+            try:
+                out = infer_new_patient_fixed(
+                    patient_data=patient,
+                    outdir=OUTDIR,
+                    base_url=BASE_URL,
+                    max_period_override=int(max_period_months)
+                )
+            except Exception as e:
+                st.error("Model inference crashed. See technical notes below.")
+                st.exception(e)
+                out = {"errors": {"inference": str(e)}}
 
-            raw_errors = out.get("errors", {})
+            # ensure out is a dict-like
+            if out is None or not isinstance(out, dict):
+                out = {"errors": {"inference": "infer returned None or unexpected type"}}
+
+            raw_errors = out.get("errors", {}) if isinstance(out.get("errors", {}), dict) else {}
+            # fixed variable name (use msg) and filter out only 'scaler' messages
             filtered_errors = {
-                k: v for k, msg in raw_errors.items()
+                k: msg for k, msg in raw_errors.items()
                 if k not in ["scaler"]
             }
+
             if filtered_errors:
                 with st.expander("Technical notes from modelling pipeline", expanded=False):
                     for k, msg in filtered_errors.items():
                         st.write(f"- **{k}**: {msg}")
+
 
             surv = out.get("survival_curve")
             cates = out.get("CATEs", {})
