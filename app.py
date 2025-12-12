@@ -9,6 +9,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+import plotly.express as px
 
 from utils.infer import infer_new_patient_fixed
 
