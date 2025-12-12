@@ -43,18 +43,18 @@ def _try_load_artifact(name, candidates, outdir=DEFAULT_OUTDIR, base_url=None):
       - remote files via base_url + candidate (if base_url provided)
     Returns (value_or_None, source_str_or_None)
     """
-    # 1) globals (importing code may have set)
+    #  globals (importing code may have set)
     if name in globals() and globals()[name] is not None:
         return globals()[name], f"globals:{name}"
 
-    # 2) local files (outdir)
+    # local files (outdir)
     for fn in candidates:
         p = os.path.join(outdir, fn)
         val, src = _load_local_art(p)
         if val is not None:
             return val, src
 
-    # 3) remote via base_url (if available)
+    #  remote via base_url (if available)
     if base_url:
         base = base_url.rstrip("/") + "/"
         for fn in candidates:
