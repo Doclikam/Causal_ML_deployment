@@ -237,15 +237,6 @@ def infer_new_patient_fixed(patient_data, return_raw=False, outdir=DEFAULT_OUTDI
             errors['scaler'] = f"scaler exists but failed to transform Xpatient; proceeding without scaling: {e}"
 
             Xpatient = None
-    # expose Xpatient in debug for downstream diagnostic display (as list or DataFrame)
-    try:
-        debug['Xpatient'] = Xpatient.copy() if Xpatient is not None else None
-    except Exception:
-        # fallback: try converting to numpy
-        try:
-            debug['Xpatient'] = Xpatient.values if hasattr(Xpatient, 'values') else str(Xpatient)
-        except Exception:
-            debug['Xpatient'] = None
 
     # ---------- CF CATE predictions ----------
     cate_results = {}
