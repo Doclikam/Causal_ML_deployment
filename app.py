@@ -19,7 +19,7 @@ COLOR_BENEFIT = "#1f77b4"   # blue for benefit
 COLOR_HARM = "#d62728"      # red for harm
 
 st.set_page_config(
-    page_title="H&N Chemo-RT Decision Aid",
+    page_title="ONCO-AID **Your Personalized Cancer Treatment Decision Assistant**",
     layout="wide",
     initial_sidebar_state="expanded"
 )
