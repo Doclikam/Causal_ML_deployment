@@ -627,7 +627,7 @@ with tab_patient:
         }
 
         with st.spinner("Running models for this patient..."):
-                        try:
+            try:
                 out = infer_new_patient_fixed(
                     patient_data=patient,
                     outdir=OUTDIR,
