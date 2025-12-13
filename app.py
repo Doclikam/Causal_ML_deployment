@@ -25,7 +25,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-st.title("Head & Neck Cancer – Treatment Decision Aid")
+st.title("ONCO-AID: Head & Neck Cancer Treatment Decision Aid")
 
 st.markdown(
     """
